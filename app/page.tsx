@@ -26,6 +26,7 @@ import {
   HeartPulse,
   LayoutDashboard,
   Landmark,
+  Languages,
   LoaderCircle,
   Menu,
   MoreHorizontal,
@@ -48,6 +49,7 @@ import {
   X,
 } from "lucide-react";
 import { CSSProperties, FormEvent, useEffect, useMemo, useRef, useState } from "react";
+import { translateToChinese } from "./i18n";
 
 type Entity = "personal" | "business";
 type Category = "Food & Beverage" | "Stationery" | "Petrol" | "Toll Fee" | "Mobile" | "Entertainment" | "Office Rent" | "Software & Subscriptions" | "Professional Fees" | "Advertising & Marketing" | "Utilities" | "Medical" | "Lifestyle" | "Education" | "Insurance" | "EPF & SOCSO" | "Zakat" | "Others";
@@ -279,6 +281,7 @@ export default function Home() {
   const [bankRows, setBankRows] = useState(bankTransactions);
   const [filingChecks, setFilingChecks] = useState<Record<string, boolean>>(defaultFilingChecks("business"));
   const [savingChecklist, setSavingChecklist] = useState(false);
+  const [language, setLanguage] = useState<"en" | "zh">("en");
   const fileRef = useRef<HTMLInputElement>(null);
 
   const entityReceipts = useMemo(() => receipts.filter((item) => item.entity === entity), [receipts, entity]);
@@ -294,6 +297,62 @@ export default function Home() {
   const filingItems = currentFilingSections.flatMap((section) => section.items.map((item) => ({ ...item, key: `${section.id}:${item.id}` })));
   const filingDone = filingItems.filter((item) => filingChecks[item.key]).length;
   const filingPercent = Math.round(filingDone / Math.max(filingItems.length, 1) * 100);
+
+  useEffect(() => {
+    if (window.localStorage.getItem("cukaimate-language") === "zh") setLanguage("zh");
+  }, []);
+
+  useEffect(() => {
+    window.localStorage.setItem("cukaimate-language", language);
+    document.documentElement.lang = language === "zh" ? "zh-Hans-MY" : "en-MY";
+    if (language !== "zh") return;
+    const root = document.querySelector<HTMLElement>(".app-shell");
+    if (!root) return;
+    const originals = new WeakMap<Text, string>();
+    const translatedNodes = new Set<Text>();
+    const originalAttributes = new Map<Element, Map<string, string>>();
+
+    const translateTextNode = (node: Text) => {
+      const current = node.nodeValue || "";
+      const prior = originals.get(node);
+      if (prior && current !== prior && current !== translateToChinese(prior)) originals.set(node, current);
+      if (!originals.has(node)) originals.set(node, current);
+      const translated = translateToChinese(originals.get(node) || current);
+      translatedNodes.add(node);
+      if (current !== translated) node.nodeValue = translated;
+    };
+    const translateElement = (element: Element) => {
+      if (element instanceof HTMLOptionElement && !element.hasAttribute("value")) element.setAttribute("value", element.textContent?.trim() || "");
+      for (const attribute of ["placeholder", "aria-label", "title"]) {
+        const value = element.getAttribute(attribute);
+        if (!value) continue;
+        if (!originalAttributes.has(element)) originalAttributes.set(element, new Map());
+        const attributes = originalAttributes.get(element)!;
+        if (!attributes.has(attribute)) attributes.set(attribute, value);
+        element.setAttribute(attribute, translateToChinese(attributes.get(attribute)!));
+      }
+    };
+    const translateTree = (node: Node) => {
+      if (node.nodeType === Node.TEXT_NODE) translateTextNode(node as Text);
+      if (node.nodeType === Node.ELEMENT_NODE) {
+        translateElement(node as Element);
+        node.childNodes.forEach(translateTree);
+      }
+    };
+    translateTree(root);
+    const observer = new MutationObserver((mutations) => {
+      for (const mutation of mutations) {
+        if (mutation.type === "characterData") translateTextNode(mutation.target as Text);
+        mutation.addedNodes.forEach(translateTree);
+      }
+    });
+    observer.observe(root, { childList: true, subtree: true, characterData: true });
+    return () => {
+      observer.disconnect();
+      translatedNodes.forEach((node) => { if (node.isConnected) node.nodeValue = originals.get(node) || node.nodeValue; });
+      originalAttributes.forEach((attributes, element) => attributes.forEach((value, attribute) => element.setAttribute(attribute, value)));
+    };
+  }, [language]);
 
   useEffect(() => {
     setFilingChecks(defaultFilingChecks(entity));
@@ -468,7 +527,7 @@ export default function Home() {
         <header>
           <button className="mobile-menu" aria-label="Open menu" onClick={() => setMenuOpen(true)}><Menu /></button>
           <div><p className="eyebrow">{entity === "personal" ? "SIM LIP GEAP · PERSONAL · FORM BE" : "SOLVER ACADEMY · BUSINESS · FORM B"}</p><h1>{tab === "overview" ? `Good morning, ${entity === "personal" ? "Sim" : "Solver"}` : tab === "receipts" ? `${entity === "personal" ? "Personal" : "Business"} receipts` : tab === "bank" ? "Bank reconciliation" : tab === "myinvois" ? "MyInvois records" : tab === "filing" ? `Borang ${entity === "personal" ? "BE" : "B"} information checklist` : tab === "audit" ? "Seven-year Audit Pack" : "Tax-ready summary"}</h1></div>
-          <div className="header-actions"><button className="icon-btn" aria-label="Notifications"><Bell /></button><button className="primary" onClick={() => setUploadOpen(true)}><Plus /> Upload receipt</button></div>
+          <div className="header-actions"><div className="language-switch" role="group" aria-label="Language"><Languages /><button className={language === "zh" ? "active" : ""} aria-pressed={language === "zh"} onClick={() => setLanguage("zh")}>中文</button><button className={language === "en" ? "active" : ""} aria-pressed={language === "en"} onClick={() => setLanguage("en")}>EN</button></div><button className="icon-btn" aria-label="Notifications"><Bell /></button><button className="primary" onClick={() => setUploadOpen(true)}><Plus /> Upload receipt</button></div>
         </header>
 
         {tab === "overview" && (
