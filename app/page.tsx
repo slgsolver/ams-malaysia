@@ -35,6 +35,7 @@ import {
   Phone,
   Plus,
   ReceiptText,
+  RotateCcw,
   Search,
   ScanLine,
   Save,
@@ -220,6 +221,44 @@ function defaultFilingChecks(entity: Entity): Record<string, boolean> {
   };
 }
 
+const monetaryFilingKeys = new Set([
+  "income:ea", "income:pension", "income:rent", "income:interest", "income:other-income", "income:exempt",
+  "relief:parents", "relief:medical", "relief:education", "relief:lifestyle", "relief:insurance", "relief:epf", "relief:spouse-child", "relief:sspn-prs", "relief:donation",
+  "payments:pcb", "payments:zakat", "payments:section110", "payments:foreign-tax",
+  "profit-loss:sales", "profit-loss:stock", "profit-loss:cost-sales", "profit-loss:expenses", "profit-loss:non-allowable", "profit-loss:capital-allowance", "profit-loss:losses", "profit-loss:statutory-income",
+  "other-income:employment", "other-income:rental", "other-income:interest-royalty", "other-income:foreign-other", "other-income:donations",
+  "reliefs-payments:personal-reliefs", "reliefs-payments:zakat", "reliefs-payments:cp500", "reliefs-payments:pcb", "reliefs-payments:section110",
+]);
+
+type AutoFilingAmount = { amount: number; receiptCount: number; source: string };
+
+function autoFilingAmount(key: string, receipts: Receipt[]): AutoFilingAmount | null {
+  const personalReliefs = receipts.filter((receipt) => receipt.entity === "personal" && receipt.taxUse === "Relief");
+  const categoryTotal = (category: Category) => {
+    const matched = personalReliefs.filter((receipt) => receipt.category === category);
+    return { amount: matched.reduce((sum, receipt) => sum + receipt.amount, 0), receiptCount: matched.length, source: "Sim Lip Geap receipts" };
+  };
+  const categoryMap: Record<string, Category> = {
+    "relief:medical": "Medical",
+    "relief:education": "Education",
+    "relief:lifestyle": "Lifestyle",
+    "relief:insurance": "Insurance",
+    "relief:epf": "EPF & SOCSO",
+    "payments:zakat": "Zakat",
+  };
+  if (categoryMap[key]) return categoryTotal(categoryMap[key]);
+  if (key === "profit-loss:expenses") {
+    const matched = receipts.filter((receipt) => receipt.entity === "business" && receipt.taxUse === "Business");
+    return { amount: matched.reduce((sum, receipt) => sum + receipt.amount * receipt.businessUse / 100, 0), receiptCount: matched.length, source: "Solver Academy receipts" };
+  }
+  if (key === "reliefs-payments:personal-reliefs") {
+    const matched = personalReliefs.filter((receipt) => receipt.category !== "Zakat");
+    return { amount: matched.reduce((sum, receipt) => sum + receipt.amount, 0), receiptCount: matched.length, source: "Sim Lip Geap receipts" };
+  }
+  if (key === "reliefs-payments:zakat") return categoryTotal("Zakat");
+  return null;
+}
+
 function parseCsvLine(line: string) {
   const cells: string[] = [];
   let current = "";
@@ -267,6 +306,7 @@ function extractAmount(text: string) {
 
 export default function Home() {
   const [receipts, setReceipts] = useState(seedReceipts);
+  const [receiptsReady, setReceiptsReady] = useState(false);
   const [entity, setEntity] = useState<Entity>("business");
   const [tab, setTab] = useState<"overview" | "receipts" | "bank" | "myinvois" | "filing" | "tax" | "audit">("overview");
   const [activeForm, setActiveForm] = useState<"B" | "BE">("B");
@@ -280,6 +320,8 @@ export default function Home() {
   const [menuOpen, setMenuOpen] = useState(false);
   const [bankRows, setBankRows] = useState(bankTransactions);
   const [filingChecks, setFilingChecks] = useState<Record<string, boolean>>(defaultFilingChecks("business"));
+  const [filingAmounts, setFilingAmounts] = useState<Record<string, number>>({});
+  const [manualAmountKeys, setManualAmountKeys] = useState<string[]>([]);
   const [savingChecklist, setSavingChecklist] = useState(false);
   const [language, setLanguage] = useState<"en" | "zh">("en");
   const fileRef = useRef<HTMLInputElement>(null);
@@ -297,9 +339,19 @@ export default function Home() {
   const filingItems = currentFilingSections.flatMap((section) => section.items.map((item) => ({ ...item, key: `${section.id}:${item.id}` })));
   const filingDone = filingItems.filter((item) => filingChecks[item.key]).length;
   const filingPercent = Math.round(filingDone / Math.max(filingItems.length, 1) * 100);
+  const autoFilingAmounts = useMemo(() => Object.fromEntries(filingItems.map((item) => [item.key, autoFilingAmount(item.key, receiptsReady ? receipts : [])]).filter(([, amount]) => amount !== null)) as Record<string, AutoFilingAmount>, [filingItems, receipts, receiptsReady]);
+  const autoFilledFields = Object.values(autoFilingAmounts).filter((item) => item.amount > 0).length;
 
   useEffect(() => {
     if (window.localStorage.getItem("cukaimate-language") === "zh") setLanguage("zh");
+  }, []);
+
+  useEffect(() => {
+    fetch("/api/receipts")
+      .then((response) => response.ok ? response.json() : Promise.reject(new Error("Receipt load failed")))
+      .then((data) => setReceipts(Array.isArray(data?.receipts) ? data.receipts : []))
+      .catch(() => undefined)
+      .finally(() => setReceiptsReady(true));
   }, []);
 
   useEffect(() => {
@@ -356,16 +408,22 @@ export default function Home() {
 
   useEffect(() => {
     setFilingChecks(defaultFilingChecks(entity));
+    setFilingAmounts({});
+    setManualAmountKeys([]);
     fetch(`/api/tax-profile?entity=${entity}`)
       .then((response) => response.ok ? response.json() : null)
-      .then((data) => { if (data?.checklist) setFilingChecks({ ...defaultFilingChecks(entity), ...data.checklist }); })
+      .then((data) => {
+        if (data?.checklist) setFilingChecks({ ...defaultFilingChecks(entity), ...data.checklist });
+        if (data?.amounts) setFilingAmounts(data.amounts);
+        if (Array.isArray(data?.manualAmountKeys)) setManualAmountKeys(data.manualAmountKeys);
+      })
       .catch(() => undefined);
   }, [entity]);
 
   async function saveFilingChecklist() {
     setSavingChecklist(true);
     try {
-      const response = await fetch("/api/tax-profile", { method: "POST", headers: { "content-type": "application/json" }, body: JSON.stringify({ entity, year: 2026, formType: entity === "personal" ? "BE" : "B", checklist: filingChecks }) });
+      const response = await fetch("/api/tax-profile", { method: "POST", headers: { "content-type": "application/json" }, body: JSON.stringify({ entity, year: 2026, formType: entity === "personal" ? "BE" : "B", checklist: filingChecks, amounts: filingAmounts, manualAmountKeys }) });
       if (!response.ok) throw new Error("Save failed");
       setToast("Filing checklist saved.");
     } catch {
@@ -596,10 +654,12 @@ export default function Home() {
             </section>
 
             {entity === "business" && <section className="legal-warning"><AlertCircle /><div><strong>First confirm Solver Academy’s legal type</strong><p>Borang B is for a resident individual carrying on a business, including a sole proprietor. If Solver Academy is a Sdn. Bhd., it generally files Borang C instead — do not combine the company return with Sim Lip Geap’s personal Borang B.</p></div></section>}
+            <section className="auto-calc-note"><CircleDollarSign /><div><strong>Receipt-linked amounts update automatically</strong><p>Only receipts marked as Business or Relief flow into matching fields. Business amounts use the confirmed business-use percentage. Annual relief limits are not applied automatically, so review the final claim before filing.</p></div></section>
 
             <section className="filing-summary">
               <article><span className="mini-icon green"><ClipboardCheck /></span><div><small>Completed</small><strong>{filingDone} / {filingItems.length}</strong></div></article>
               <article><span className="mini-icon yellow"><AlertCircle /></span><div><small>Required still missing</small><strong>{filingItems.filter((item) => item.required && !filingChecks[item.key]).length}</strong></div></article>
+              <article><span className="mini-icon mint"><CircleDollarSign /></span><div><small>Auto-filled from receipts</small><strong>{autoFilledFields} fields</strong></div></article>
               <article><span className="mini-icon violet"><BookOpen /></span><div><small>Information sections</small><strong>{currentFilingSections.length}</strong></div></article>
               <article><span className="mini-icon blue"><Archive /></span><div><small>Record retention</small><strong>7 years</strong></div></article>
             </section>
@@ -607,7 +667,35 @@ export default function Home() {
             <div className="filing-sections">
               {currentFilingSections.map((section, sectionIndex) => {
                 const sectionDone = section.items.filter((item) => filingChecks[`${section.id}:${item.id}`]).length;
-                return <section className="panel filing-section" key={section.id}><div className="filing-section-head"><span>{String(sectionIndex + 1).padStart(2, "0")}</span><div><h3>{section.title}</h3><p>{section.note}</p></div><strong>{sectionDone}/{section.items.length}</strong></div><div className="filing-list">{section.items.map((item) => { const itemKey = `${section.id}:${item.id}`; const checked = Boolean(filingChecks[itemKey]); return <button type="button" className={`filing-row ${checked ? "checked" : ""}`} key={itemKey} onClick={() => setFilingChecks((current) => ({ ...current, [itemKey]: !checked }))}><span className="filing-check">{checked && <Check />}</span><span className="filing-copy"><b>{item.label}</b><small>{item.detail}</small></span>{item.required && <span className="required-chip">Required</span>}</button>; })}</div></section>;
+                return <section className="panel filing-section" key={section.id}>
+                  <div className="filing-section-head"><span>{String(sectionIndex + 1).padStart(2, "0")}</span><div><h3>{section.title}</h3><p>{section.note}</p></div><strong>{sectionDone}/{section.items.length}</strong></div>
+                  <div className="filing-list">{section.items.map((item) => {
+                    const itemKey = `${section.id}:${item.id}`;
+                    const checked = Boolean(filingChecks[itemKey]);
+                    const autoAmount = autoFilingAmounts[itemKey];
+                    const isManual = manualAmountKeys.includes(itemKey);
+                    const amountValue: number | "" = isManual ? (filingAmounts[itemKey] ?? 0) : autoAmount?.amount ? Number(autoAmount.amount.toFixed(2)) : "";
+                    return <div className={`filing-row ${checked ? "checked" : ""}`} key={itemKey}>
+                      <button type="button" className="filing-check" aria-label={`Mark ${item.label} ${checked ? "not ready" : "ready"}`} onClick={() => setFilingChecks((current) => ({ ...current, [itemKey]: !checked }))}>{checked && <Check />}</button>
+                      <button type="button" className="filing-copy" onClick={() => setFilingChecks((current) => ({ ...current, [itemKey]: !checked }))}><b>{item.label}</b><small>{item.detail}</small></button>
+                      {item.required && <span className="required-chip">Required</span>}
+                      {monetaryFilingKeys.has(itemKey) && <div className={`filing-amount ${isManual ? "manual" : autoAmount?.amount ? "automatic" : "empty"}`}>
+                        <label><span>RM</span><input type="number" min="0" step="0.01" value={amountValue} placeholder="0.00" aria-label={`${item.label} amount in ringgit`} onChange={(event) => {
+                          const value = event.target.value;
+                          if (value === "") {
+                            setFilingAmounts((current) => { const next = { ...current }; delete next[itemKey]; return next; });
+                            setManualAmountKeys((current) => current.filter((key) => key !== itemKey));
+                            return;
+                          }
+                          setFilingAmounts((current) => ({ ...current, [itemKey]: Math.max(0, Number(value)) }));
+                          setManualAmountKeys((current) => current.includes(itemKey) ? current : [...current, itemKey]);
+                        }} /></label>
+                        <small>{isManual ? "Manual amount" : autoAmount?.amount ? `${autoAmount.receiptCount} receipt${autoAmount.receiptCount === 1 ? "" : "s"} · Auto-filled` : "Enter amount"}</small>
+                        {isManual && autoAmount && <button type="button" className="reset-auto" onClick={() => { setManualAmountKeys((current) => current.filter((key) => key !== itemKey)); setFilingAmounts((current) => { const next = { ...current }; delete next[itemKey]; return next; }); }}><RotateCcw /> Use automatic</button>}
+                      </div>}
+                    </div>;
+                  })}</div>
+                </section>;
               })}
             </div>
 
