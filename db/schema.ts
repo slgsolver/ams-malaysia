@@ -3,6 +3,7 @@ import { index, integer, real, sqliteTable, text } from "drizzle-orm/sqlite-core
 export const receipts = sqliteTable("receipts", {
   id: text("id").primaryKey(),
   userId: text("user_id").notNull(),
+  entityType: text("entity_type").notNull().default("business"),
   merchant: text("merchant").notNull(),
   receiptDate: text("receipt_date").notNull(),
   amount: real("amount").notNull(),
@@ -20,6 +21,7 @@ export const receipts = sqliteTable("receipts", {
   index("idx_receipts_user_created").on(table.userId, table.createdAt),
   index("idx_receipts_user_tax_use").on(table.userId, table.taxUse),
   index("idx_receipts_user_myinvois").on(table.userId, table.myInvoisUuid),
+  index("idx_receipts_user_entity_created").on(table.userId, table.entityType, table.createdAt),
 ]);
 
 export const bankTransactions = sqliteTable("bank_transactions", {

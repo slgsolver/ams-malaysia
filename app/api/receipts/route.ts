@@ -13,6 +13,7 @@ async function ensureSchema() {
     bindings.DB.prepare(`CREATE TABLE IF NOT EXISTS receipts (
       id TEXT PRIMARY KEY,
       user_id TEXT NOT NULL,
+      entity_type TEXT NOT NULL DEFAULT 'business',
       merchant TEXT NOT NULL,
       receipt_date TEXT NOT NULL,
       amount REAL NOT NULL,
@@ -30,6 +31,7 @@ async function ensureSchema() {
     bindings.DB.prepare("CREATE INDEX IF NOT EXISTS idx_receipts_user_created ON receipts(user_id, created_at DESC)"),
     bindings.DB.prepare("CREATE INDEX IF NOT EXISTS idx_receipts_user_tax_use ON receipts(user_id, tax_use)"),
     bindings.DB.prepare("CREATE INDEX IF NOT EXISTS idx_receipts_user_myinvois ON receipts(user_id, myinvois_uuid)"),
+    bindings.DB.prepare("CREATE INDEX IF NOT EXISTS idx_receipts_user_entity_created ON receipts(user_id, entity_type, created_at DESC)"),
   ]);
 }
 
@@ -40,7 +42,7 @@ function userId(request: NextRequest) {
 export async function GET(request: NextRequest) {
   await ensureSchema();
   const result = await bindings.DB.prepare(
-    "SELECT id, merchant, receipt_date AS date, amount, category, tax_use AS taxUse, business_use AS businessUse, business_purpose AS businessPurpose, myinvois_uuid AS myInvoisUuid, confidence, file_name AS fileName FROM receipts WHERE user_id = ? ORDER BY created_at DESC LIMIT 500",
+    "SELECT id, entity_type AS entity, merchant, receipt_date AS date, amount, category, tax_use AS taxUse, business_use AS businessUse, business_purpose AS businessPurpose, myinvois_uuid AS myInvoisUuid, confidence, file_name AS fileName FROM receipts WHERE user_id = ? ORDER BY created_at DESC LIMIT 500",
   ).bind(userId(request)).all();
   return NextResponse.json({ receipts: result.results });
 }
@@ -65,11 +67,12 @@ export async function POST(request: NextRequest) {
 
   const now = new Date().toISOString();
   await bindings.DB.prepare(`INSERT INTO receipts
-    (id, user_id, merchant, receipt_date, amount, category, tax_use, business_use, business_purpose, myinvois_uuid, confidence, file_key, file_name, mime_type, created_at)
-    VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`) 
+    (id, user_id, entity_type, merchant, receipt_date, amount, category, tax_use, business_use, business_purpose, myinvois_uuid, confidence, file_key, file_name, mime_type, created_at)
+    VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`) 
     .bind(
       id,
       owner,
+      String(form.get("entity") || "business"),
       String(form.get("merchant") || "Unknown merchant"),
       String(form.get("date") || now.slice(0, 10)),
       Number(form.get("amount") || 0),
