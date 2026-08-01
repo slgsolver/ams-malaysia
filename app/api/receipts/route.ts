@@ -18,6 +18,9 @@ async function ensureSchema() {
       amount REAL NOT NULL,
       category TEXT NOT NULL,
       tax_use TEXT NOT NULL,
+      business_use INTEGER NOT NULL DEFAULT 0,
+      business_purpose TEXT,
+      myinvois_uuid TEXT,
       confidence INTEGER NOT NULL DEFAULT 0,
       file_key TEXT,
       file_name TEXT,
@@ -26,6 +29,7 @@ async function ensureSchema() {
     )`),
     bindings.DB.prepare("CREATE INDEX IF NOT EXISTS idx_receipts_user_created ON receipts(user_id, created_at DESC)"),
     bindings.DB.prepare("CREATE INDEX IF NOT EXISTS idx_receipts_user_tax_use ON receipts(user_id, tax_use)"),
+    bindings.DB.prepare("CREATE INDEX IF NOT EXISTS idx_receipts_user_myinvois ON receipts(user_id, myinvois_uuid)"),
   ]);
 }
 
@@ -36,7 +40,7 @@ function userId(request: NextRequest) {
 export async function GET(request: NextRequest) {
   await ensureSchema();
   const result = await bindings.DB.prepare(
-    "SELECT id, merchant, receipt_date AS date, amount, category, tax_use AS taxUse, confidence, file_name AS fileName FROM receipts WHERE user_id = ? ORDER BY created_at DESC LIMIT 500",
+    "SELECT id, merchant, receipt_date AS date, amount, category, tax_use AS taxUse, business_use AS businessUse, business_purpose AS businessPurpose, myinvois_uuid AS myInvoisUuid, confidence, file_name AS fileName FROM receipts WHERE user_id = ? ORDER BY created_at DESC LIMIT 500",
   ).bind(userId(request)).all();
   return NextResponse.json({ receipts: result.results });
 }
@@ -61,8 +65,8 @@ export async function POST(request: NextRequest) {
 
   const now = new Date().toISOString();
   await bindings.DB.prepare(`INSERT INTO receipts
-    (id, user_id, merchant, receipt_date, amount, category, tax_use, confidence, file_key, file_name, mime_type, created_at)
-    VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`)
+    (id, user_id, merchant, receipt_date, amount, category, tax_use, business_use, business_purpose, myinvois_uuid, confidence, file_key, file_name, mime_type, created_at)
+    VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`) 
     .bind(
       id,
       owner,
@@ -71,6 +75,9 @@ export async function POST(request: NextRequest) {
       Number(form.get("amount") || 0),
       String(form.get("category") || "Others"),
       String(form.get("taxUse") || "Review"),
+      Number(form.get("businessUse") || 0),
+      String(form.get("businessPurpose") || "") || null,
+      String(form.get("myInvoisUuid") || "") || null,
       Number(form.get("confidence") || 0),
       fileKey,
       fileName,

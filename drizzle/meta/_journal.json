@@ -15,6 +15,13 @@
       "when": 1785561192889,
       "tag": "0001_clever_unus",
       "breakpoints": true
+    },
+    {
+      "idx": 2,
+      "version": "6",
+      "when": 1785562545229,
+      "tag": "0002_ancient_the_order",
+      "breakpoints": true
     }
   ]
 }
