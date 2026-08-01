@@ -25,8 +25,8 @@ export async function generateMetadata(): Promise<Metadata> {
     title,
     description,
     icons: { icon: "/favicon.svg", shortcut: "/favicon.svg" },
-    openGraph: { title, description, type: "website", locale: "en_MY", images: [{ url: `${origin}/og-v3.png`, width: 1731, height: 909, alt: "CukaiMate Malaysia separate personal and business accounts" }] },
-    twitter: { card: "summary_large_image", title, description, images: [`${origin}/og-v3.png`] },
+    openGraph: { title, description, type: "website", locale: "en_MY", images: [{ url: `${origin}/og-v4.png`, width: 1734, height: 907, alt: "CukaiMate Malaysia Borang BE and Borang B information organised" }] },
+    twitter: { card: "summary_large_image", title, description, images: [`${origin}/og-v4.png`] },
   };
 }
 

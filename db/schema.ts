@@ -37,3 +37,15 @@ export const bankTransactions = sqliteTable("bank_transactions", {
   index("idx_bank_user_date").on(table.userId, table.transactionDate),
   index("idx_bank_user_match").on(table.userId, table.matchedReceiptId),
 ]);
+
+export const taxProfiles = sqliteTable("tax_profiles", {
+  id: text("id").primaryKey(),
+  userId: text("user_id").notNull(),
+  entityType: text("entity_type").notNull(),
+  year: integer("year").notNull(),
+  formType: text("form_type").notNull(),
+  checklistJson: text("checklist_json").notNull(),
+  updatedAt: text("updated_at").notNull(),
+}, (table) => [
+  index("idx_tax_profiles_user_entity_year").on(table.userId, table.entityType, table.year),
+]);

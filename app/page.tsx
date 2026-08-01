@@ -14,6 +14,8 @@ import {
   ChevronDown,
   ChevronRight,
   CircleHelp,
+  CircleDollarSign,
+  ClipboardCheck,
   Download,
   FileUp,
   FileCheck2,
@@ -34,16 +36,18 @@ import {
   ReceiptText,
   Search,
   ScanLine,
+  Save,
   ShieldCheck,
   Sparkles,
   Ticket,
   TrendingUp,
   UtensilsCrossed,
+  UserRound,
   WalletCards,
   Wifi,
   X,
 } from "lucide-react";
-import { FormEvent, useMemo, useRef, useState } from "react";
+import { CSSProperties, FormEvent, useEffect, useMemo, useRef, useState } from "react";
 
 type Entity = "personal" | "business";
 type Category = "Food & Beverage" | "Stationery" | "Petrol" | "Toll Fee" | "Mobile" | "Entertainment" | "Office Rent" | "Software & Subscriptions" | "Professional Fees" | "Advertising & Marketing" | "Utilities" | "Medical" | "Lifestyle" | "Education" | "Insurance" | "EPF & SOCSO" | "Zakat" | "Others";
@@ -112,6 +116,108 @@ const bankTransactions = [
   { date: "21 Jul", description: "DUITNOW QR SUPPLIER", amount: 86.4, matched: "", status: "Missing receipt" },
 ];
 
+type FilingItem = { id: string; label: string; detail: string; required?: boolean };
+type FilingSection = { id: string; title: string; note: string; items: FilingItem[] };
+
+function filingSections(entity: Entity): FilingSection[] {
+  const common: FilingSection[] = [
+    { id: "identity", title: "A · Taxpayer particulars", note: "Personal details shown in the return", items: [
+      { id: "tin", label: "Tax Identification Number (TIN)", detail: "Individual TIN registered with HASiL", required: true },
+      { id: "id", label: "MyKad / passport number", detail: "Identification registered with HASiL", required: true },
+      { id: "contact", label: "Correspondence address and contact", detail: "Current address, postcode, state, email and phone", required: true },
+      { id: "personal", label: "Personal status", detail: "Citizenship, gender, date of birth and marital status", required: true },
+      { id: "assessment", label: "Assessment election", detail: "Separate or joint assessment; spouse TIN where relevant", required: true },
+      { id: "bank", label: "Bank account for refund", detail: "Account holder name, Malaysian bank and account number", required: true },
+    ]},
+  ];
+  if (entity === "personal") return [...common,
+    { id: "income", title: "B · Income records", note: "All taxable income, not only salary", items: [
+      { id: "ea", label: "EA / EC employment statement", detail: "Salary, bonus, allowances, benefits-in-kind and tax borne by employer", required: true },
+      { id: "pension", label: "Pension / annuity", detail: "Taxable pension or annuity received, if any" },
+      { id: "rent", label: "Rental income", detail: "Gross rent, allowable direct expenses and statutory income" },
+      { id: "interest", label: "Interest, discounts and royalties", detail: "Taxable Malaysian-source amounts, if any" },
+      { id: "other-income", label: "Other and foreign income", detail: "Other taxable income and foreign income received in Malaysia, where applicable" },
+      { id: "exempt", label: "Exempt income", detail: "Supporting statement for exempt income reported" },
+    ]},
+    { id: "relief", title: "G · Reliefs and deductions", note: "Evidence and limits must match the relevant YA", items: [
+      { id: "self", label: "Individual and dependent relatives", detail: "Basic individual relief is handled in the tax computation", required: true },
+      { id: "parents", label: "Parents’ medical / care expenses", detail: "Receipts and practitioner certification where required" },
+      { id: "medical", label: "Medical expenses", detail: "Self, spouse or child; keep invoices and supporting certification" },
+      { id: "education", label: "Education and upskilling fees", detail: "Course invoice and proof of payment" },
+      { id: "lifestyle", label: "Lifestyle and sports", detail: "Books, devices, internet or sports evidence within applicable limits" },
+      { id: "insurance", label: "Life / medical insurance", detail: "Annual premium statement" },
+      { id: "epf", label: "EPF, SOCSO and approved contributions", detail: "Annual contribution statement" },
+      { id: "spouse-child", label: "Spouse and child relief", detail: "Marriage, study, disability or childcare evidence where applicable" },
+      { id: "sspn-prs", label: "SSPN / PRS / deferred annuity", detail: "Official annual statement where applicable" },
+      { id: "donation", label: "Approved gifts and donations", detail: "Official receipt naming an approved body" },
+    ]},
+    { id: "payments", title: "Tax rebates and payments", note: "Amounts already paid or withheld", items: [
+      { id: "pcb", label: "PCB / MTD deducted", detail: "Total from EA forms and payslips", required: true },
+      { id: "zakat", label: "Zakat / fitrah", detail: "Official payment receipt for rebate" },
+      { id: "section110", label: "Section 110 tax deducted", detail: "Dividend / other tax deduction certificates where applicable" },
+      { id: "foreign-tax", label: "Foreign tax credit", detail: "HK-8 / HK-9 working sheets and foreign tax proof where applicable" },
+    ]},
+    { id: "declaration", title: "Declaration and filing", note: "Final checks before e-BE submission", items: [
+      { id: "agent", label: "Tax agent particulars", detail: "Name, approval number and signature only if an agent prepares the return" },
+      { id: "declaration", label: "Declaration of true and complete information", detail: "Review all income sources and claims before submission", required: true },
+      { id: "retention", label: "Seven-year document retention", detail: "Keep records, documents and working sheets", required: true },
+    ]},
+  ];
+  return [...common,
+    { id: "business-profile", title: "B · Business particulars", note: "For an individual carrying on business", items: [
+      { id: "legal-type", label: "Confirm business legal type", detail: "Borang B is for an individual business/sole proprietor; a Sdn. Bhd. generally files Form C", required: true },
+      { id: "business-name", label: "Business name and registration number", detail: "SSM name / BRN and principal business address", required: true },
+      { id: "business-code", label: "Business code / activity", detail: "Relevant HASiL business code and activity description", required: true },
+      { id: "accounting-period", label: "Accounting period", detail: "Opening and closing date of the business accounts", required: true },
+      { id: "partners", label: "Partnership details", detail: "Partnership TIN and statutory income share, if applicable" },
+    ]},
+    { id: "profit-loss", title: "C · Business income computation", note: "Profit and loss plus tax adjustments", items: [
+      { id: "sales", label: "Sales / gross business receipts", detail: "Invoices, platform settlements and cash sales", required: true },
+      { id: "stock", label: "Opening and closing stock", detail: "Stock valuation and purchase records where applicable" },
+      { id: "cost-sales", label: "Purchases and cost of sales", detail: "Supplier invoices, freight and direct costs" },
+      { id: "expenses", label: "Allowable business expenses", detail: "Expense ledger, receipts, business purpose and private-use adjustment", required: true },
+      { id: "non-allowable", label: "Non-allowable / private expenses", detail: "Add back personal, capital and prohibited expenses", required: true },
+      { id: "capital-allowance", label: "Capital allowance schedule", detail: "Assets purchased/disposed, initial and annual allowances" },
+      { id: "losses", label: "Current / brought-forward business losses", detail: "Working sheets and prior-year balance" },
+      { id: "statutory-income", label: "Adjusted and statutory business income", detail: "Tax computation reconciliation", required: true },
+    ]},
+    { id: "other-income", title: "Other income and total income", note: "Borang B also includes non-business sources", items: [
+      { id: "employment", label: "Employment income / EA form", detail: "Salary, benefits and PCB if also employed" },
+      { id: "rental", label: "Rental income", detail: "Gross rent and allowable direct expenses" },
+      { id: "interest-royalty", label: "Interest, discounts and royalties", detail: "Taxable amounts where applicable" },
+      { id: "foreign-other", label: "Foreign and other income", detail: "Relevant amounts received in Malaysia and supporting records" },
+      { id: "donations", label: "Approved donations / gifts", detail: "Official receipts and applicable restriction" },
+    ]},
+    { id: "reliefs-payments", title: "Reliefs, rebates and tax paid", note: "Personal items still belong to Sim Lip Geap as the Form B taxpayer", items: [
+      { id: "personal-reliefs", label: "Personal relief schedule", detail: "Medical, lifestyle, insurance, EPF, spouse and child evidence", required: true },
+      { id: "zakat", label: "Zakat / fitrah rebate", detail: "Official receipt" },
+      { id: "cp500", label: "CP500 instalments", detail: "All instalments paid for the year", required: true },
+      { id: "pcb", label: "PCB / MTD", detail: "Employment tax deductions, if any" },
+      { id: "section110", label: "Section 110 / foreign tax credit", detail: "Certificates and HK-6 / HK-8 / HK-9 where relevant" },
+    ]},
+    { id: "declaration", title: "Declaration and supporting records", note: "Final filing and audit support", items: [
+      { id: "myinvois", label: "e-Invoice / MyInvois register", detail: "Validated sales and purchase references where applicable" },
+      { id: "mitrs", label: "MITRS supporting documents", detail: "Prepare specified financial information and tax computation when required" },
+      { id: "agent", label: "Tax agent particulars", detail: "Name and approval number if an agent prepares the return" },
+      { id: "declaration", label: "Declaration of true and complete information", detail: "Review all income sources and claims", required: true },
+      { id: "retention", label: "Seven-year document retention", detail: "Keep accounts, receipts and working sheets", required: true },
+    ]},
+  ];
+}
+
+function defaultFilingChecks(entity: Entity): Record<string, boolean> {
+  return entity === "personal" ? {
+    "identity:id": true, "identity:contact": true, "identity:personal": true,
+    "relief:medical": true, "relief:lifestyle": true, "relief:insurance": true,
+    "payments:zakat": true, "declaration:retention": true,
+  } : {
+    "identity:id": true, "identity:contact": true, "identity:personal": true,
+    "business-profile:business-name": true, "business-profile:business-code": true,
+    "profit-loss:sales": true, "profit-loss:expenses": true,
+    "declaration:myinvois": true, "declaration:retention": true,
+  };
+}
+
 function parseCsvLine(line: string) {
   const cells: string[] = [];
   let current = "";
@@ -160,7 +266,7 @@ function extractAmount(text: string) {
 export default function Home() {
   const [receipts, setReceipts] = useState(seedReceipts);
   const [entity, setEntity] = useState<Entity>("business");
-  const [tab, setTab] = useState<"overview" | "receipts" | "bank" | "myinvois" | "tax" | "audit">("overview");
+  const [tab, setTab] = useState<"overview" | "receipts" | "bank" | "myinvois" | "filing" | "tax" | "audit">("overview");
   const [activeForm, setActiveForm] = useState<"B" | "BE">("B");
   const [uploadOpen, setUploadOpen] = useState(false);
   const [processing, setProcessing] = useState(false);
@@ -171,6 +277,8 @@ export default function Home() {
   const [toast, setToast] = useState("");
   const [menuOpen, setMenuOpen] = useState(false);
   const [bankRows, setBankRows] = useState(bankTransactions);
+  const [filingChecks, setFilingChecks] = useState<Record<string, boolean>>(defaultFilingChecks("business"));
+  const [savingChecklist, setSavingChecklist] = useState(false);
   const fileRef = useRef<HTMLInputElement>(null);
 
   const entityReceipts = useMemo(() => receipts.filter((item) => item.entity === entity), [receipts, entity]);
@@ -182,6 +290,32 @@ export default function Home() {
   }, [entityReceipts]);
 
   const filtered = entityReceipts.filter((receipt) => `${receipt.merchant} ${receipt.category}`.toLowerCase().includes(query.toLowerCase()));
+  const currentFilingSections = useMemo(() => filingSections(entity), [entity]);
+  const filingItems = currentFilingSections.flatMap((section) => section.items.map((item) => ({ ...item, key: `${section.id}:${item.id}` })));
+  const filingDone = filingItems.filter((item) => filingChecks[item.key]).length;
+  const filingPercent = Math.round(filingDone / Math.max(filingItems.length, 1) * 100);
+
+  useEffect(() => {
+    setFilingChecks(defaultFilingChecks(entity));
+    fetch(`/api/tax-profile?entity=${entity}`)
+      .then((response) => response.ok ? response.json() : null)
+      .then((data) => { if (data?.checklist) setFilingChecks({ ...defaultFilingChecks(entity), ...data.checklist }); })
+      .catch(() => undefined);
+  }, [entity]);
+
+  async function saveFilingChecklist() {
+    setSavingChecklist(true);
+    try {
+      const response = await fetch("/api/tax-profile", { method: "POST", headers: { "content-type": "application/json" }, body: JSON.stringify({ entity, year: 2026, formType: entity === "personal" ? "BE" : "B", checklist: filingChecks }) });
+      if (!response.ok) throw new Error("Save failed");
+      setToast("Filing checklist saved.");
+    } catch {
+      setToast("Checklist saved for this session; cloud sync is unavailable.");
+    } finally {
+      setSavingChecklist(false);
+      setTimeout(() => setToast(""), 3000);
+    }
+  }
 
   function changeEntity(next: Entity) {
     setEntity(next);
@@ -319,11 +453,12 @@ export default function Home() {
           <button className={tab === "receipts" ? "active" : ""} onClick={() => setTab("receipts")}><ReceiptText /> Receipts <span className="nav-count">{entityReceipts.length}</span></button>
           {entity === "business" && <button className={tab === "bank" ? "active" : ""} onClick={() => setTab("bank")}><Landmark /> Bank matching <span className="nav-alert">1</span></button>}
           {entity === "business" && <button className={tab === "myinvois" ? "active" : ""} onClick={() => setTab("myinvois")}><ScanLine /> MyInvois</button>}
+          <button className={tab === "filing" ? "active" : ""} onClick={() => setTab("filing")}><ClipboardCheck /> Form checklist <span className="nav-progress">{filingPercent}%</span></button>
           <button className={tab === "tax" ? "active" : ""} onClick={() => setTab("tax")}><FileText /> Tax Report</button>
           <button className={tab === "audit" ? "active" : ""} onClick={() => setTab("audit")}><Archive /> Audit Pack</button>
         </nav>
         <div className="sidebar-bottom">
-          <div className="tax-card"><span className="mini-icon"><FileCheck2 /></span><strong>YA 2026 · Form {entity === "personal" ? "BE" : "B"}</strong><p>{entity === "personal" ? "Personal relief records kept separate." : "Business expense records organised."}</p><button onClick={() => setTab("tax")}>View tax summary <ArrowUpRight /></button></div>
+          <div className="tax-card"><span className="mini-icon"><FileCheck2 /></span><strong>YA 2026 · Form {entity === "personal" ? "BE" : "B"}</strong><p>{filingPercent}% of filing information marked ready.</p><button onClick={() => setTab("filing")}>Open filing checklist <ArrowUpRight /></button></div>
           <button className="help"><CircleHelp /> Help & tax guide</button>
           <div className="profile"><span>{entity === "personal" ? "SL" : "SA"}</span><div><strong>{entity === "personal" ? "Sim Lip Geap" : "Solver Academy"}</strong><small>{entity === "personal" ? "Individual taxpayer" : "Business account"}</small></div><ChevronDown /></div>
         </div>
@@ -332,7 +467,7 @@ export default function Home() {
       <section className="workspace">
         <header>
           <button className="mobile-menu" aria-label="Open menu" onClick={() => setMenuOpen(true)}><Menu /></button>
-          <div><p className="eyebrow">{entity === "personal" ? "SIM LIP GEAP · PERSONAL · FORM BE" : "SOLVER ACADEMY · BUSINESS · FORM B"}</p><h1>{tab === "overview" ? `Good morning, ${entity === "personal" ? "Sim" : "Solver"}` : tab === "receipts" ? `${entity === "personal" ? "Personal" : "Business"} receipts` : tab === "bank" ? "Bank reconciliation" : tab === "myinvois" ? "MyInvois records" : tab === "audit" ? "Seven-year Audit Pack" : "Tax-ready summary"}</h1></div>
+          <div><p className="eyebrow">{entity === "personal" ? "SIM LIP GEAP · PERSONAL · FORM BE" : "SOLVER ACADEMY · BUSINESS · FORM B"}</p><h1>{tab === "overview" ? `Good morning, ${entity === "personal" ? "Sim" : "Solver"}` : tab === "receipts" ? `${entity === "personal" ? "Personal" : "Business"} receipts` : tab === "bank" ? "Bank reconciliation" : tab === "myinvois" ? "MyInvois records" : tab === "filing" ? `Borang ${entity === "personal" ? "BE" : "B"} information checklist` : tab === "audit" ? "Seven-year Audit Pack" : "Tax-ready summary"}</h1></div>
           <div className="header-actions"><button className="icon-btn" aria-label="Notifications"><Bell /></button><button className="primary" onClick={() => setUploadOpen(true)}><Plus /> Upload receipt</button></div>
         </header>
 
@@ -386,6 +521,38 @@ export default function Home() {
             <section className="feature-hero myinvois-hero"><div><span className="pill"><ScanLine /> Malaysia e-Invoice</span><h2>Keep receipts and MyInvois together.</h2><p>Import validated e-Invoice records or scan a supplier QR. UUID, supplier TIN and supporting receipt stay linked for your tax agent.</p><div className="hero-actions"><label className="dark-button file-button"><FileUp /> Import MyInvois file<input type="file" accept=".csv,.json,application/json,text/csv" onChange={(e) => { if (e.target.files?.[0]) { setToast("MyInvois file checked and imported."); setTimeout(() => setToast(""), 3200); } }} /></label><button className="secondary" onClick={() => setToast("QR scanner is ready for a supported camera device.")}><ScanLine /> Scan QR</button></div></div><div className="einvoice-card"><span className="einvoice-brand">MY<span>INVOIS</span></span><div className="qr-placeholder"><ScanLine /></div><small>VALIDATED</small><strong>EI-98F2-71A0</strong><p>PETRONAS Station · RM 120.50</p><span className="verified-line"><Check /> Receipt linked</span></div></section>
             <section className="integration-grid"><article className="panel"><span className="mini-icon green"><BadgeCheck /></span><div><h3>2 validated documents</h3><p>UUID and supplier details recorded</p></div></article><article className="panel"><span className="mini-icon yellow"><AlertCircle /></span><div><h3>4 receipts without UUID</h3><p>Normal receipt or exempt supplier</p></div></article><article className="panel"><span className="mini-icon violet"><ShieldCheck /></span><div><h3>Duplicate protection</h3><p>No duplicate UUID detected</p></div></article></section>
             <section className="panel data-panel"><div className="panel-head"><div><h3>e-Invoice register</h3><p>Imported and linked supplier documents</p></div><a href="https://mytax.hasil.gov.my" target="_blank" rel="noreferrer" className="text-button">Open MyTax <ArrowUpRight /></a></div><div className="einvoice-list"><div><span className="cat-icon green"><Fuel /></span><p><b>PETRONAS Station</b><small>TIN C25845678010 · 28 Jul 2026</small></p><code>EI-98F2-71A0</code><strong>RM 120.50</strong><span className="status-ready"><Check /> Linked</span></div><div><span className="cat-icon green"><Phone /></span><p><b>Maxis Berhad</b><small>TIN C19874432100 · 25 Jul 2026</small></p><code>EI-44B1-901D</code><strong>RM 128.00</strong><span className="status-ready"><Check /> Linked</span></div></div></section>
+          </div>
+        )}
+
+        {tab === "filing" && (
+          <div className="content filing-page">
+            <section className="filing-hero">
+              <div>
+                <span className="pill"><ClipboardCheck /> YA 2026 preparation</span>
+                <h2>Borang {activeForm} information, all in one place.</h2>
+                <p>{entity === "personal" ? "Collect Sim Lip Geap’s employment income, other non-business income, relief, rebate and tax-payment records before filing." : "Collect Solver Academy’s business accounts, tax adjustments, other income, personal relief and instalment records before filing."}</p>
+                <div className="hero-actions"><button className="dark-button" onClick={saveFilingChecklist} disabled={savingChecklist}>{savingChecklist ? <LoaderCircle className="spinner-inline" /> : <Save />} {savingChecklist ? "Saving…" : "Save checklist"}</button><a className="secondary filing-link" href="https://mytax.hasil.gov.my" target="_blank" rel="noreferrer">Open MyTax <ArrowUpRight /></a></div>
+              </div>
+              <div className="filing-score-ring" style={{ "--filing-progress": `${filingPercent}%` } as CSSProperties}><div><strong>{filingPercent}%</strong><span>information ready</span></div></div>
+            </section>
+
+            {entity === "business" && <section className="legal-warning"><AlertCircle /><div><strong>First confirm Solver Academy’s legal type</strong><p>Borang B is for a resident individual carrying on a business, including a sole proprietor. If Solver Academy is a Sdn. Bhd., it generally files Borang C instead — do not combine the company return with Sim Lip Geap’s personal Borang B.</p></div></section>}
+
+            <section className="filing-summary">
+              <article><span className="mini-icon green"><ClipboardCheck /></span><div><small>Completed</small><strong>{filingDone} / {filingItems.length}</strong></div></article>
+              <article><span className="mini-icon yellow"><AlertCircle /></span><div><small>Required still missing</small><strong>{filingItems.filter((item) => item.required && !filingChecks[item.key]).length}</strong></div></article>
+              <article><span className="mini-icon violet"><BookOpen /></span><div><small>Information sections</small><strong>{currentFilingSections.length}</strong></div></article>
+              <article><span className="mini-icon blue"><Archive /></span><div><small>Record retention</small><strong>7 years</strong></div></article>
+            </section>
+
+            <div className="filing-sections">
+              {currentFilingSections.map((section, sectionIndex) => {
+                const sectionDone = section.items.filter((item) => filingChecks[`${section.id}:${item.id}`]).length;
+                return <section className="panel filing-section" key={section.id}><div className="filing-section-head"><span>{String(sectionIndex + 1).padStart(2, "0")}</span><div><h3>{section.title}</h3><p>{section.note}</p></div><strong>{sectionDone}/{section.items.length}</strong></div><div className="filing-list">{section.items.map((item) => { const itemKey = `${section.id}:${item.id}`; const checked = Boolean(filingChecks[itemKey]); return <button type="button" className={`filing-row ${checked ? "checked" : ""}`} key={itemKey} onClick={() => setFilingChecks((current) => ({ ...current, [itemKey]: !checked }))}><span className="filing-check">{checked && <Check />}</span><span className="filing-copy"><b>{item.label}</b><small>{item.detail}</small></span>{item.required && <span className="required-chip">Required</span>}</button>; })}</div></section>;
+              })}
+            </div>
+
+            <section className="filing-source-note"><ShieldCheck /><div><strong>Prepared from the latest available HASiL YA 2025 guidance</strong><p>Use this as a preparation checklist. Recheck eligibility, relief limits and the final YA 2026 form when HASiL releases it. CukaiMate organises records and does not replace a licensed tax agent.</p></div><a href="https://www.hasil.gov.my/borang/muat-turun-borang/muat-turun-borang-individu/" target="_blank" rel="noreferrer">Official forms <ArrowUpRight /></a></section>
           </div>
         )}
 
