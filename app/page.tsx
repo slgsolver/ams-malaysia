@@ -89,6 +89,21 @@ const bankTransactions = [
   { date: "21 Jul", description: "DUITNOW QR SUPPLIER", amount: 86.4, matched: "", status: "Missing receipt" },
 ];
 
+function parseCsvLine(line: string) {
+  const cells: string[] = [];
+  let current = "";
+  let quoted = false;
+  for (let i = 0; i < line.length; i++) {
+    const char = line[i];
+    if (char === '"' && line[i + 1] === '"') { current += '"'; i++; }
+    else if (char === '"') quoted = !quoted;
+    else if (char === "," && !quoted) { cells.push(current.trim()); current = ""; }
+    else current += char;
+  }
+  cells.push(current.trim());
+  return cells;
+}
+
 function currency(value: number) {
   return new Intl.NumberFormat("en-MY", { style: "currency", currency: "MYR" }).format(value);
 }
@@ -122,6 +137,7 @@ export default function Home() {
   const [query, setQuery] = useState("");
   const [toast, setToast] = useState("");
   const [menuOpen, setMenuOpen] = useState(false);
+  const [bankRows, setBankRows] = useState(bankTransactions);
   const fileRef = useRef<HTMLInputElement>(null);
 
   const totals = useMemo(() => {
@@ -212,7 +228,7 @@ export default function Home() {
       sevenYearRetentionUntil: "31 Dec 2033",
       summary: { grossExpenses: totals.total, potentialBusinessDeductions: totals.business, personalReliefReceipts: totals.relief },
       receipts,
-      bankReconciliation: bankTransactions,
+      bankReconciliation: bankRows,
       disclaimer: "Prepared for review. Final tax treatment must be confirmed by the taxpayer or licensed tax agent.",
     };
     const blob = new Blob([JSON.stringify(pack, null, 2)], { type: "application/json" });
@@ -223,6 +239,25 @@ export default function Home() {
     URL.revokeObjectURL(link.href);
     setToast("Seven-year Audit Pack downloaded.");
     setTimeout(() => setToast(""), 3200);
+  }
+
+  async function importBankStatement(file: File) {
+    const text = await file.text();
+    const lines = text.split(/\r?\n/).filter((line) => line.trim());
+    const parsed = lines.slice(1).map((line) => {
+      const cells = parseCsvLine(line);
+      const amountIndex = cells.findLastIndex((cell) => Number.isFinite(Number(cell.replace(/[RM,$\s]/gi, "").replaceAll(",", ""))));
+      const amount = amountIndex >= 0 ? Math.abs(Number(cells[amountIndex].replace(/[RM,$\s]/gi, "").replaceAll(",", ""))) : 0;
+      const match = receipts.find((receipt) => Math.abs(receipt.amount - amount) < 0.01);
+      return { date: cells[0] || "—", description: cells[1] || cells[0] || "Bank transaction", amount, matched: match?.merchant || "", status: match ? "Matched" : "Missing receipt" };
+    }).filter((row) => row.amount > 0);
+    if (!parsed.length) {
+      setToast("No transactions found. Use CSV columns: Date, Description, Amount.");
+    } else {
+      setBankRows(parsed);
+      setToast(`${file.name} imported — ${parsed.filter((row) => row.status === "Matched").length} matches found.`);
+    }
+    setTimeout(() => setToast(""), 3600);
   }
 
   return (
@@ -284,9 +319,9 @@ export default function Home() {
 
         {tab === "bank" && (
           <div className="content feature-page">
-            <section className="feature-hero compact"><div><span className="pill"><Landmark /> Bank matching</span><h2>Find payments without receipts.</h2><p>Import a Malaysian bank or e-wallet CSV. CukaiMate matches amount, date and merchant so nothing is missed.</p></div><label className="dark-button file-button"><FileUp /> Import statement<input type="file" accept=".csv,text/csv" onChange={(e) => { if (e.target.files?.[0]) { setToast(`${e.target.files[0].name} imported — 3 matches found.`); setTimeout(() => setToast(""), 3200); } }} /></label></section>
-            <section className="metric-grid bank-metrics"><article><div className="metric-icon mint"><BadgeCheck /></div><span>Auto-matched</span><strong>3</strong><small>RM 285.30 linked to receipts</small></article><article><div className="metric-icon yellow"><AlertCircle /></div><span>Missing receipts</span><strong>1</strong><small>RM 86.40 needs evidence</small></article><article><div className="metric-icon lavender"><WalletCards /></div><span>Statement total</span><strong>RM 371.70</strong><small>July 2026 import</small></article><article><div className="metric-icon peach"><ShieldCheck /></div><span>Match rate</span><strong>77%</strong><small>3 of 4 transactions</small></article></section>
-            <section className="panel data-panel"><div className="panel-head"><div><h3>July statement</h3><p>Maybank Current Account · imported today</p></div><span className="safe-chip"><ShieldCheck /> Private</span></div><div className="table-wrap"><table><thead><tr><th>Date</th><th>Bank description</th><th>Matched receipt</th><th>Status</th><th>Amount</th></tr></thead><tbody>{bankTransactions.map((item) => <tr key={item.description}><td>{item.date}</td><td><strong>{item.description}</strong></td><td>{item.matched || <button className="link-action" onClick={() => setUploadOpen(true)}>+ Add receipt</button>}</td><td><span className={`match-status ${item.status === "Matched" ? "matched" : "missing"}`}>{item.status === "Matched" ? <Check /> : <AlertCircle />}{item.status}</span></td><td><strong>{currency(item.amount)}</strong></td></tr>)}</tbody></table></div></section>
+            <section className="feature-hero compact"><div><span className="pill"><Landmark /> Bank matching</span><h2>Find payments without receipts.</h2><p>Import a Malaysian bank or e-wallet CSV. CukaiMate matches amount, date and merchant so nothing is missed.</p></div><label className="dark-button file-button"><FileUp /> Import statement<input type="file" accept=".csv,text/csv" onChange={(e) => e.target.files?.[0] && importBankStatement(e.target.files[0])} /></label></section>
+            <section className="metric-grid bank-metrics"><article><div className="metric-icon mint"><BadgeCheck /></div><span>Auto-matched</span><strong>{bankRows.filter((r) => r.status === "Matched").length}</strong><small>{currency(bankRows.filter((r) => r.status === "Matched").reduce((s, r) => s + r.amount, 0))} linked to receipts</small></article><article><div className="metric-icon yellow"><AlertCircle /></div><span>Missing receipts</span><strong>{bankRows.filter((r) => r.status !== "Matched").length}</strong><small>{currency(bankRows.filter((r) => r.status !== "Matched").reduce((s, r) => s + r.amount, 0))} needs evidence</small></article><article><div className="metric-icon lavender"><WalletCards /></div><span>Statement total</span><strong>{currency(bankRows.reduce((s, r) => s + r.amount, 0))}</strong><small>Latest CSV import</small></article><article><div className="metric-icon peach"><ShieldCheck /></div><span>Match rate</span><strong>{Math.round(bankRows.filter((r) => r.status === "Matched").length / Math.max(bankRows.length, 1) * 100)}%</strong><small>{bankRows.filter((r) => r.status === "Matched").length} of {bankRows.length} transactions</small></article></section>
+            <section className="panel data-panel"><div className="panel-head"><div><h3>Imported statement</h3><p>CSV matching by amount and receipt record</p></div><span className="safe-chip"><ShieldCheck /> Private</span></div><div className="table-wrap"><table><thead><tr><th>Date</th><th>Bank description</th><th>Matched receipt</th><th>Status</th><th>Amount</th></tr></thead><tbody>{bankRows.map((item, index) => <tr key={`${item.description}-${index}`}><td>{item.date}</td><td><strong>{item.description}</strong></td><td>{item.matched || <button className="link-action" onClick={() => setUploadOpen(true)}>+ Add receipt</button>}</td><td><span className={`match-status ${item.status === "Matched" ? "matched" : "missing"}`}>{item.status === "Matched" ? <Check /> : <AlertCircle />}{item.status}</span></td><td><strong>{currency(item.amount)}</strong></td></tr>)}</tbody></table></div></section>
           </div>
         )}
 
