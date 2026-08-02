@@ -654,7 +654,7 @@ export default function Home() {
 
             <section className="two-column">
               <div className="panel spending-panel"><div className="panel-head"><div><h3>Spending by category</h3><p>{entity === "personal" ? "Sim Lip Geap · Personal" : "Solver Academy · Business"}</p></div><button>Jul 2026 <ChevronDown /></button></div><div className="category-bars">
-                {(entity === "personal" ? ["Medical", "Lifestyle", "Insurance", "Zakat", "Food & Beverage"] : ["Advertising & Marketing", "Petrol", "Mobile", "Software & Subscriptions", "Stationery"] as Category[]).map((category) => {
+                {(entity === "personal" ? ["Medical", "Lifestyle", "Insurance", "Zakat", "Food & Beverage"] as Category[] : ["Advertising & Marketing", "Petrol", "Mobile", "Software & Subscriptions", "Stationery"] as Category[]).map((category) => {
                   const amount = entityReceipts.filter((r) => r.category === category).reduce((sum, r) => sum + r.amount, 0);
                   const Icon = categoryMeta[category].icon;
                   return <div className="bar-row" key={category}><span className={`cat-icon ${categoryMeta[category].tone}`}><Icon /></span><div><span>{category}</span><div className="bar"><i style={{ width: `${Math.max(8, Math.min(100, (amount / Math.max(totals.total, 1)) * 180))}%` }}></i></div></div><strong>{currency(amount)}</strong></div>;
