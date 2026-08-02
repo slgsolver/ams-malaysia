@@ -236,7 +236,7 @@ const replacements: Array<[string, string]> = [
   ["Collect Solver Academy’s business accounts, tax adjustments, other income, personal relief and instalment records before filing.", "报税前整理 Solver Academy 的业务账目、税务调整、其他收入、个人减免与分期税款资料。"],
   ["Borang B is for a resident individual carrying on a business, including a sole proprietor. If Solver Academy is a Sdn. Bhd., it generally files Borang C instead — do not combine the company return with Sim Lip Geap’s personal Borang B.", "Borang B 适用于经营业务的居民个人，包括独资经营者。如果 Solver Academy 是 Sdn. Bhd.，一般应呈报 Borang C；不要把公司报税与 Sim Lip Geap 的个人 Borang B 混在一起。"],
   ["Prepared from the latest available HASiL YA 2025 guidance", "依据 HASiL 最新可用的 YA 2025 指南准备"],
-  ["Use this as a preparation checklist. Recheck eligibility, relief limits and the final YA 2026 form when HASiL releases it. CukaiMate organises records and does not replace a licensed tax agent.", "本清单供准备资料使用。HASiL 发布 YA 2026 最终表格后，请重新核对资格与减免限额。CukaiMate 只协助整理资料，不能取代持牌税务代理。"],
+  ["Use this as a preparation checklist. Recheck eligibility, relief limits and the final YA 2026 form when HASiL releases it. AMS organises records and does not replace a licensed tax agent.", "本清单供准备资料使用。HASiL 发布 YA 2026 最终表格后，请重新核对资格与减免限额。AMS 只协助整理资料，不能取代持牌税务代理。"],
   ["Business expenses and personal reliefs are kept separate.", "业务开销与个人减免会分开记录。"],
   ["Business deductions are excluded. Only eligible personal relief records appear below.", "不包含业务扣除项目；下方只显示可能符合资格的个人减免资料。"],
   ["Your business records are 82% tax-ready.", "你的业务资料已有 82% 准备完成。"],
