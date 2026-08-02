@@ -343,12 +343,12 @@ export default function Home() {
   const autoFilledFields = Object.values(autoFilingAmounts).filter((item) => item.amount > 0).length;
 
   useEffect(() => {
-    if (window.localStorage.getItem("cukaimate-language") === "zh") setLanguage("zh");
+    if (window.localStorage.getItem("ams-language") === "zh") setLanguage("zh");
   }, []);
 
   useEffect(() => {
     try {
-      const stored = window.localStorage.getItem("cukaimate-receipts");
+      const stored = window.localStorage.getItem("ams-receipts");
       if (stored) {
         const savedReceipts = JSON.parse(stored);
         if (Array.isArray(savedReceipts)) setReceipts(savedReceipts);
@@ -361,11 +361,11 @@ export default function Home() {
   }, []);
 
   useEffect(() => {
-    if (receiptsReady) window.localStorage.setItem("cukaimate-receipts", JSON.stringify(receipts));
+    if (receiptsReady) window.localStorage.setItem("ams-receipts", JSON.stringify(receipts));
   }, [receipts, receiptsReady]);
 
   useEffect(() => {
-    window.localStorage.setItem("cukaimate-language", language);
+    window.localStorage.setItem("ams-language", language);
     document.documentElement.lang = language === "zh" ? "zh-Hans-MY" : "en-MY";
     if (language !== "zh") return;
     const root = document.querySelector<HTMLElement>(".app-shell");
@@ -422,7 +422,7 @@ export default function Home() {
     setFilingAmounts({});
     setManualAmountKeys([]);
     try {
-      const saved = window.localStorage.getItem(`cukaimate-filing-${entity}`);
+      const saved = window.localStorage.getItem(`ams-filing-${entity}`);
       if (!saved) return;
       const profile = JSON.parse(saved);
       if (profile?.checklist) setFilingChecks({ ...defaults, ...profile.checklist });
@@ -436,7 +436,7 @@ export default function Home() {
   function saveFilingChecklist() {
     setSavingChecklist(true);
     try {
-      window.localStorage.setItem(`cukaimate-filing-${entity}`, JSON.stringify({ checklist: filingChecks, amounts: filingAmounts, manualAmountKeys }));
+      window.localStorage.setItem(`ams-filing-${entity}`, JSON.stringify({ checklist: filingChecks, amounts: filingAmounts, manualAmountKeys }));
       setToast("Filing checklist saved on this browser.");
     } catch {
       setToast("Your browser could not save this checklist.");
