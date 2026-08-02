@@ -324,10 +324,6 @@ export default function Home() {
   const [manualAmountKeys, setManualAmountKeys] = useState<string[]>([]);
   const [savingChecklist, setSavingChecklist] = useState(false);
   const [language, setLanguage] = useState<"en" | "zh">("en");
-  const [authState, setAuthState] = useState<"checking" | "signed-out" | "signed-in">("checking");
-  const [signInEmail, setSignInEmail] = useState("");
-  const [signInStatus, setSignInStatus] = useState("");
-  const [sendingLink, setSendingLink] = useState(false);
   const fileRef = useRef<HTMLInputElement>(null);
 
   const entityReceipts = useMemo(() => receipts.filter((item) => item.entity === entity), [receipts, entity]);
@@ -351,19 +347,22 @@ export default function Home() {
   }, []);
 
   useEffect(() => {
-    fetch("/api/auth/me")
-      .then((response) => response.ok ? response.json() : null)
-      .then((data) => setAuthState(data?.user ? "signed-in" : "signed-out"))
-      .catch(() => setAuthState("signed-out"));
+    try {
+      const stored = window.localStorage.getItem("cukaimate-receipts");
+      if (stored) {
+        const savedReceipts = JSON.parse(stored);
+        if (Array.isArray(savedReceipts)) setReceipts(savedReceipts);
+      }
+    } catch {
+      // Keep the built-in examples when the browser blocks local storage.
+    } finally {
+      setReceiptsReady(true);
+    }
   }, []);
 
   useEffect(() => {
-    fetch("/api/receipts")
-      .then((response) => response.ok ? response.json() : Promise.reject(new Error("Receipt load failed")))
-      .then((data) => setReceipts(Array.isArray(data?.receipts) ? data.receipts : []))
-      .catch(() => undefined)
-      .finally(() => setReceiptsReady(true));
-  }, []);
+    if (receiptsReady) window.localStorage.setItem("cukaimate-receipts", JSON.stringify(receipts));
+  }, [receipts, receiptsReady]);
 
   useEffect(() => {
     window.localStorage.setItem("cukaimate-language", language);
@@ -418,27 +417,29 @@ export default function Home() {
   }, [language]);
 
   useEffect(() => {
-    setFilingChecks(defaultFilingChecks(entity));
+    const defaults = defaultFilingChecks(entity);
+    setFilingChecks(defaults);
     setFilingAmounts({});
     setManualAmountKeys([]);
-    fetch(`/api/tax-profile?entity=${entity}`)
-      .then((response) => response.ok ? response.json() : null)
-      .then((data) => {
-        if (data?.checklist) setFilingChecks({ ...defaultFilingChecks(entity), ...data.checklist });
-        if (data?.amounts) setFilingAmounts(data.amounts);
-        if (Array.isArray(data?.manualAmountKeys)) setManualAmountKeys(data.manualAmountKeys);
-      })
-      .catch(() => undefined);
+    try {
+      const saved = window.localStorage.getItem(`cukaimate-filing-${entity}`);
+      if (!saved) return;
+      const profile = JSON.parse(saved);
+      if (profile?.checklist) setFilingChecks({ ...defaults, ...profile.checklist });
+      if (profile?.amounts) setFilingAmounts(profile.amounts);
+      if (Array.isArray(profile?.manualAmountKeys)) setManualAmountKeys(profile.manualAmountKeys);
+    } catch {
+      // Use the form defaults when the browser blocks local storage.
+    }
   }, [entity]);
 
-  async function saveFilingChecklist() {
+  function saveFilingChecklist() {
     setSavingChecklist(true);
     try {
-      const response = await fetch("/api/tax-profile", { method: "POST", headers: { "content-type": "application/json" }, body: JSON.stringify({ entity, year: 2026, formType: entity === "personal" ? "BE" : "B", checklist: filingChecks, amounts: filingAmounts, manualAmountKeys }) });
-      if (!response.ok) throw new Error("Save failed");
-      setToast("Filing checklist saved.");
+      window.localStorage.setItem(`cukaimate-filing-${entity}`, JSON.stringify({ checklist: filingChecks, amounts: filingAmounts, manualAmountKeys }));
+      setToast("Filing checklist saved on this browser.");
     } catch {
-      setToast("Checklist saved for this session; cloud sync is unavailable.");
+      setToast("Your browser could not save this checklist.");
     } finally {
       setSavingChecklist(false);
       setTimeout(() => setToast(""), 3000);
@@ -492,23 +493,14 @@ export default function Home() {
     setProcessing(false);
   }
 
-  async function saveReceipt(event: FormEvent) {
+  function saveReceipt(event: FormEvent) {
     event.preventDefault();
     if (!draft) return;
     setReceipts((current) => [draft, ...current]);
-    const form = new FormData();
-    Object.entries(draft).forEach(([key, value]) => form.append(key, String(value)));
-    if (uploadFile) form.append("file", uploadFile);
-    try {
-      const response = await fetch("/api/receipts", { method: "POST", body: form });
-      if (!response.ok) throw new Error("Save failed");
-    } catch {
-      setToast("Saved for this session. Cloud storage will sync when available.");
-    }
     setUploadOpen(false);
     setDraft(null);
     setUploadFile(null);
-    setToast("Receipt saved and included in your tax summary.");
+    setToast("Receipt saved on this browser and included in your tax summary.");
     setTimeout(() => setToast(""), 3200);
   }
 
@@ -565,39 +557,6 @@ export default function Home() {
       setToast(`${file.name} imported — ${parsed.filter((row) => row.status === "Matched").length} matches found.`);
     }
     setTimeout(() => setToast(""), 3600);
-  }
-
-  async function sendSignInLink(event: FormEvent<HTMLFormElement>) {
-    event.preventDefault();
-    setSendingLink(true);
-    setSignInStatus("");
-    try {
-      const response = await fetch("/api/auth/otp", { method: "POST", headers: { "content-type": "application/json" }, body: JSON.stringify({ email: signInEmail }) });
-      if (!response.ok) throw new Error("Unable to send sign-in link");
-      setSignInStatus("Check your email for the secure CukaiMate sign-in link.");
-    } catch {
-      setSignInStatus("Unable to send a link. Please try again shortly.");
-    } finally {
-      setSendingLink(false);
-    }
-  }
-
-  if (authState !== "signed-in") {
-    return <main className="app-shell" style={{ minHeight: "100vh", display: "grid", placeItems: "center", padding: 24 }}>
-      <section className="panel" style={{ width: "min(100%, 460px)", padding: 32 }}>
-        <div className="brand"><span className="brand-mark">C</span><span>CukaiMate<small>Malaysia</small></span></div>
-        <div style={{ marginTop: 28 }}>
-          <span className="pill"><ShieldCheck /> Private tax workspace</span>
-          <h1 style={{ marginTop: 16 }}>Your receipts stay yours.</h1>
-          <p>Sign in with email to keep Sim Lip Geap and Solver Academy records separate and protected.</p>
-          {authState === "checking" ? <p style={{ marginTop: 22 }}>Checking your secure session…</p> : <form onSubmit={sendSignInLink} style={{ display: "grid", gap: 12, marginTop: 24 }}>
-            <label>Email address<input type="email" value={signInEmail} onChange={(event) => setSignInEmail(event.target.value)} placeholder="you@example.com" required autoComplete="email" /></label>
-            <button className="primary" disabled={sendingLink} type="submit">{sendingLink ? "Sending…" : "Email me a sign-in link"}</button>
-            {signInStatus && <small>{signInStatus}</small>}
-          </form>}
-        </div>
-      </section>
-    </main>;
   }
 
   return (
