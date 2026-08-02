@@ -13,7 +13,7 @@ export function supabaseUrl() {
 }
 
 export function supabaseAnonKey() {
-  return setting("NEXT_PUBLIC_SUPABASE_ANON_KEY");
+  return process.env.NEXT_PUBLIC_SUPABASE_ANON_KEY ?? setting("NEXT_PUBLIC_SUPABASE_PUBLISHABLE_KEY");
 }
 
 export async function accessToken() {
