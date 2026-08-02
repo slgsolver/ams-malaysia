@@ -324,6 +324,10 @@ export default function Home() {
   const [manualAmountKeys, setManualAmountKeys] = useState<string[]>([]);
   const [savingChecklist, setSavingChecklist] = useState(false);
   const [language, setLanguage] = useState<"en" | "zh">("en");
+  const [authState, setAuthState] = useState<"checking" | "signed-out" | "signed-in">("checking");
+  const [signInEmail, setSignInEmail] = useState("");
+  const [signInStatus, setSignInStatus] = useState("");
+  const [sendingLink, setSendingLink] = useState(false);
   const fileRef = useRef<HTMLInputElement>(null);
 
   const entityReceipts = useMemo(() => receipts.filter((item) => item.entity === entity), [receipts, entity]);
@@ -344,6 +348,13 @@ export default function Home() {
 
   useEffect(() => {
     if (window.localStorage.getItem("cukaimate-language") === "zh") setLanguage("zh");
+  }, []);
+
+  useEffect(() => {
+    fetch("/api/auth/me")
+      .then((response) => response.ok ? response.json() : null)
+      .then((data) => setAuthState(data?.user ? "signed-in" : "signed-out"))
+      .catch(() => setAuthState("signed-out"));
   }, []);
 
   useEffect(() => {
@@ -554,6 +565,39 @@ export default function Home() {
       setToast(`${file.name} imported — ${parsed.filter((row) => row.status === "Matched").length} matches found.`);
     }
     setTimeout(() => setToast(""), 3600);
+  }
+
+  async function sendSignInLink(event: FormEvent<HTMLFormElement>) {
+    event.preventDefault();
+    setSendingLink(true);
+    setSignInStatus("");
+    try {
+      const response = await fetch("/api/auth/otp", { method: "POST", headers: { "content-type": "application/json" }, body: JSON.stringify({ email: signInEmail }) });
+      if (!response.ok) throw new Error("Unable to send sign-in link");
+      setSignInStatus("Check your email for the secure CukaiMate sign-in link.");
+    } catch {
+      setSignInStatus("Unable to send a link. Please try again shortly.");
+    } finally {
+      setSendingLink(false);
+    }
+  }
+
+  if (authState !== "signed-in") {
+    return <main className="app-shell" style={{ minHeight: "100vh", display: "grid", placeItems: "center", padding: 24 }}>
+      <section className="panel" style={{ width: "min(100%, 460px)", padding: 32 }}>
+        <div className="brand"><span className="brand-mark">C</span><span>CukaiMate<small>Malaysia</small></span></div>
+        <div style={{ marginTop: 28 }}>
+          <span className="pill"><ShieldCheck /> Private tax workspace</span>
+          <h1 style={{ marginTop: 16 }}>Your receipts stay yours.</h1>
+          <p>Sign in with email to keep Sim Lip Geap and Solver Academy records separate and protected.</p>
+          {authState === "checking" ? <p style={{ marginTop: 22 }}>Checking your secure session…</p> : <form onSubmit={sendSignInLink} style={{ display: "grid", gap: 12, marginTop: 24 }}>
+            <label>Email address<input type="email" value={signInEmail} onChange={(event) => setSignInEmail(event.target.value)} placeholder="you@example.com" required autoComplete="email" /></label>
+            <button className="primary" disabled={sendingLink} type="submit">{sendingLink ? "Sending…" : "Email me a sign-in link"}</button>
+            {signInStatus && <small>{signInStatus}</small>}
+          </form>}
+        </div>
+      </section>
+    </main>;
   }
 
   return (

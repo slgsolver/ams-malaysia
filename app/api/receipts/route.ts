@@ -1,91 +1,62 @@
-import { env } from "cloudflare:workers";
 import { NextRequest, NextResponse } from "next/server";
+import { authenticatedUser, supabaseHeaders, supabaseUrl, accessToken } from "../../lib/supabase-server";
 
-type Bindings = {
-  DB: D1Database;
-  RECEIPTS: R2Bucket;
+type ReceiptRow = {
+  id: string; entity_type: "personal" | "business"; merchant: string; receipt_date: string; amount: number;
+  category: string; tax_use: "Business" | "Relief" | "Personal" | "Review"; business_use: number;
+  business_purpose: string | null; myinvois_uuid: string | null; confidence: number; file_name: string | null;
 };
 
-const bindings = env as unknown as Bindings;
-
-async function ensureSchema() {
-  await bindings.DB.batch([
-    bindings.DB.prepare(`CREATE TABLE IF NOT EXISTS receipts (
-      id TEXT PRIMARY KEY,
-      user_id TEXT NOT NULL,
-      entity_type TEXT NOT NULL DEFAULT 'business',
-      merchant TEXT NOT NULL,
-      receipt_date TEXT NOT NULL,
-      amount REAL NOT NULL,
-      category TEXT NOT NULL,
-      tax_use TEXT NOT NULL,
-      business_use INTEGER NOT NULL DEFAULT 0,
-      business_purpose TEXT,
-      myinvois_uuid TEXT,
-      confidence INTEGER NOT NULL DEFAULT 0,
-      file_key TEXT,
-      file_name TEXT,
-      mime_type TEXT,
-      created_at TEXT NOT NULL
-    )`),
-    bindings.DB.prepare("CREATE INDEX IF NOT EXISTS idx_receipts_user_created ON receipts(user_id, created_at DESC)"),
-    bindings.DB.prepare("CREATE INDEX IF NOT EXISTS idx_receipts_user_tax_use ON receipts(user_id, tax_use)"),
-    bindings.DB.prepare("CREATE INDEX IF NOT EXISTS idx_receipts_user_myinvois ON receipts(user_id, myinvois_uuid)"),
-    bindings.DB.prepare("CREATE INDEX IF NOT EXISTS idx_receipts_user_entity_created ON receipts(user_id, entity_type, created_at DESC)"),
-  ]);
+function unauthenticated() {
+  return NextResponse.json({ error: "Please sign in to access your tax records." }, { status: 401 });
 }
 
-function userId(request: NextRequest) {
-  return request.headers.get("oai-authenticated-user-id") ?? "local-preview";
-}
-
-export async function GET(request: NextRequest) {
-  await ensureSchema();
-  const result = await bindings.DB.prepare(
-    "SELECT id, entity_type AS entity, merchant, receipt_date AS date, amount, category, tax_use AS taxUse, business_use AS businessUse, business_purpose AS businessPurpose, myinvois_uuid AS myInvoisUuid, confidence, file_name AS fileName FROM receipts WHERE user_id = ? ORDER BY created_at DESC LIMIT 500",
-  ).bind(userId(request)).all();
-  return NextResponse.json({ receipts: result.results });
+export async function GET() {
+  const token = await accessToken();
+  if (!token) return unauthenticated();
+  const response = await fetch(`${supabaseUrl()}/rest/v1/receipts?select=id,entity_type,merchant,receipt_date,amount,category,tax_use,business_use,business_purpose,myinvois_uuid,confidence,file_name&order=created_at.desc&limit=500`, {
+    headers: supabaseHeaders(token), cache: "no-store",
+  });
+  if (!response.ok) return NextResponse.json({ error: "Unable to load receipts." }, { status: 502 });
+  const rows = await response.json() as ReceiptRow[];
+  return NextResponse.json({ receipts: rows.map((row) => ({
+    id: row.id, entity: row.entity_type, merchant: row.merchant, date: row.receipt_date, amount: Number(row.amount),
+    category: row.category, taxUse: row.tax_use, businessUse: row.business_use, businessPurpose: row.business_purpose ?? undefined,
+    myInvoisUuid: row.myinvois_uuid ?? undefined, confidence: row.confidence, fileName: row.file_name ?? undefined,
+  })) });
 }
 
 export async function POST(request: NextRequest) {
-  await ensureSchema();
+  const token = await accessToken();
+  const user = await authenticatedUser();
+  if (!token || !user) return unauthenticated();
   const form = await request.formData();
   const id = String(form.get("id") || crypto.randomUUID());
   const file = form.get("file");
-  const owner = userId(request);
-  let fileKey: string | null = null;
+  let filePath: string | null = null;
   let fileName: string | null = null;
   let mimeType: string | null = null;
-
   if (file instanceof File && file.size > 0) {
     if (file.size > 10 * 1024 * 1024) return NextResponse.json({ error: "File is larger than 10 MB" }, { status: 400 });
-    fileKey = `${owner}/${id}`;
+    filePath = `${user.id}/${id}`;
     fileName = file.name;
-    mimeType = file.type;
-    await bindings.RECEIPTS.put(fileKey, file.stream(), { httpMetadata: { contentType: file.type }, customMetadata: { originalName: file.name } });
+    mimeType = file.type || "application/octet-stream";
+    const upload = await fetch(`${supabaseUrl()}/storage/v1/object/receipts/${filePath}`, {
+      method: "POST", headers: supabaseHeaders(token, { "content-type": mimeType, "x-upsert": "false" }), body: file,
+    });
+    if (!upload.ok) return NextResponse.json({ error: "Unable to store the receipt file." }, { status: 502 });
   }
-
-  const now = new Date().toISOString();
-  await bindings.DB.prepare(`INSERT INTO receipts
-    (id, user_id, entity_type, merchant, receipt_date, amount, category, tax_use, business_use, business_purpose, myinvois_uuid, confidence, file_key, file_name, mime_type, created_at)
-    VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`) 
-    .bind(
-      id,
-      owner,
-      String(form.get("entity") || "business"),
-      String(form.get("merchant") || "Unknown merchant"),
-      String(form.get("date") || now.slice(0, 10)),
-      Number(form.get("amount") || 0),
-      String(form.get("category") || "Others"),
-      String(form.get("taxUse") || "Review"),
-      Number(form.get("businessUse") || 0),
-      String(form.get("businessPurpose") || "") || null,
-      String(form.get("myInvoisUuid") || "") || null,
-      Number(form.get("confidence") || 0),
-      fileKey,
-      fileName,
-      mimeType,
-      now,
-    ).run();
+  const row = {
+    id, user_id: user.id, entity_type: String(form.get("entity") || "business"), merchant: String(form.get("merchant") || "Unknown merchant"),
+    receipt_date: String(form.get("date") || new Date().toISOString().slice(0, 10)), amount: Number(form.get("amount") || 0),
+    category: String(form.get("category") || "Others"), tax_use: String(form.get("taxUse") || "Review"),
+    business_use: Number(form.get("businessUse") || 0), business_purpose: String(form.get("businessPurpose") || "") || null,
+    myinvois_uuid: String(form.get("myInvoisUuid") || "") || null, confidence: Number(form.get("confidence") || 0),
+    file_path: filePath, file_name: fileName, mime_type: mimeType,
+  };
+  const insert = await fetch(`${supabaseUrl()}/rest/v1/receipts`, {
+    method: "POST", headers: supabaseHeaders(token, { "content-type": "application/json", prefer: "return=minimal" }), body: JSON.stringify(row),
+  });
+  if (!insert.ok) return NextResponse.json({ error: "Unable to save the receipt record." }, { status: 502 });
   return NextResponse.json({ ok: true, id });
 }
