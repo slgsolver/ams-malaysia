@@ -35,12 +35,14 @@ export type JournalEntry = {
 export type AccountingReceipt = {
   id: string;
   merchant: string;
+  date?: string;
   amount: number;
   category: string;
   businessUse: number;
   taxUse: string;
   businessPurpose?: string;
   fileName?: string;
+  paymentAccountCode?: string;
 };
 
 export const chartOfAccounts: Account[] = [
@@ -123,7 +125,8 @@ function accountMap(accounts: Account[]) {
 }
 
 export function roundMoney(value: number) {
-  return Math.round((value + Number.EPSILON) * 100) / 100;
+  if (!Number.isFinite(value)) return value;
+  return Math.sign(value) * Math.round((Math.abs(value) + Number.EPSILON) * 100) / 100;
 }
 
 export function journalTotals(entry: Pick<JournalEntry, "lines">) {
@@ -136,7 +139,67 @@ export function journalTotals(entry: Pick<JournalEntry, "lines">) {
 export function validateJournal(entry: Pick<JournalEntry, "lines">, accounts: Account[] = chartOfAccounts) {
   const totals = journalTotals(entry);
   const accountsByCode = accounts === chartOfAccounts ? accountByCode : accountMap(accounts);
-  return entry.lines.length >= 2 && totals.debit > 0 && totals.debit === totals.credit && entry.lines.every((item) => Boolean(accountsByCode[item.accountCode]) && !(item.debit > 0 && item.credit > 0) && (item.debit > 0 || item.credit > 0));
+  return entry.lines.length >= 2
+    && entry.lines.length <= 100
+    && Number.isFinite(totals.debit)
+    && Number.isFinite(totals.credit)
+    && totals.debit > 0
+    && totals.debit === totals.credit
+    && entry.lines.every((item) => {
+      const debit = Number(item.debit);
+      const credit = Number(item.credit);
+      return Boolean(accountsByCode[item.accountCode])
+        && Number.isFinite(debit)
+        && Number.isFinite(credit)
+        && debit >= 0
+        && credit >= 0
+        && debit <= 999_999_999_999.99
+        && credit <= 999_999_999_999.99
+        && !(debit > 0 && credit > 0)
+        && (debit > 0 || credit > 0);
+    });
+}
+
+const journalSources = new Set<JournalEntry["source"]>(["opening", "sales", "receipt", "bank", "manual", "year-end", "reversal"]);
+const journalStatuses = new Set<JournalStatus>(["draft", "posted", "reversed"]);
+
+/** Discards corrupt or tampered browser records before they can reach a report. */
+export function sanitizeJournalEntries(value: unknown, accounts: Account[] = chartOfAccounts): JournalEntry[] {
+  if (!Array.isArray(value)) return [];
+  const seen = new Set<string>();
+  const result: JournalEntry[] = [];
+  for (const candidate of value) {
+    if (!candidate || typeof candidate !== "object") continue;
+    const item = candidate as Partial<JournalEntry>;
+    const id = typeof item.id === "string" ? item.id.trim() : "";
+    const date = typeof item.date === "string" ? item.date.trim() : "";
+    const reference = typeof item.reference === "string" ? item.reference.trim() : "";
+    const description = typeof item.description === "string" ? item.description.trim() : "";
+    if (!id || id.length > 160 || seen.has(id) || !/^\d{4}-\d{2}-\d{2}$/.test(date) || !reference || reference.length > 160 || !description || description.length > 500) continue;
+    if (!item.source || !journalSources.has(item.source) || !item.status || !journalStatuses.has(item.status) || !Array.isArray(item.lines)) continue;
+    const lines = item.lines.map((candidateLine) => ({
+      accountCode: typeof candidateLine?.accountCode === "string" ? candidateLine.accountCode : "",
+      debit: Number(candidateLine?.debit),
+      credit: Number(candidateLine?.credit),
+      ...(typeof candidateLine?.memo === "string" && candidateLine.memo.trim() ? { memo: candidateLine.memo.trim().slice(0, 500) } : {}),
+    }));
+    const entry: JournalEntry = {
+      id,
+      date,
+      reference,
+      description,
+      source: item.source,
+      status: item.status,
+      lines,
+      ...(typeof item.sourceReceiptId === "string" && item.sourceReceiptId ? { sourceReceiptId: item.sourceReceiptId.slice(0, 160) } : {}),
+      ...(typeof item.reversedEntryId === "string" && item.reversedEntryId ? { reversedEntryId: item.reversedEntryId.slice(0, 160) } : {}),
+      createdAt: typeof item.createdAt === "string" && item.createdAt ? item.createdAt : new Date().toISOString(),
+    };
+    if (!validateJournal(entry, accounts)) continue;
+    seen.add(id);
+    result.push(entry);
+  }
+  return result;
 }
 
 export function postedEntries(entries: JournalEntry[]) {
@@ -180,9 +243,12 @@ export function balanceSheet(entries: JournalEntry[], accounts: Account[] = char
   return { assets, liabilities, equity, currentYearEarnings: pnl.netProfit, totalAssets, totalLiabilities, totalEquity, balanced: Math.abs(totalAssets - totalLiabilities - totalEquity) < 0.01 };
 }
 
-export function cashFlowStatement(entries: JournalEntry[], accounts: Account[] = chartOfAccounts) {
+export function cashFlowStatement(entries: JournalEntry[], accounts: Account[] = chartOfAccounts, period: { start?: string; end?: string } = {}) {
   const accountsByCode = accounts === chartOfAccounts ? accountByCode : accountMap(accounts);
-  const posted = postedEntries(entries);
+  const start = period.start || "2026-01-01";
+  const end = period.end || "2026-12-31";
+  const allPosted = postedEntries(entries).filter((entry) => entry.date <= end);
+  const posted = allPosted.filter((entry) => entry.date >= start);
   let operating = 0;
   let investing = 0;
   let financing = 0;
@@ -200,14 +266,16 @@ export function cashFlowStatement(entries: JournalEntry[], accounts: Account[] =
   operating = roundMoney(operating);
   investing = roundMoney(investing);
   financing = roundMoney(financing);
-  const pnl = profitAndLoss(entries, accounts);
+  const pnl = profitAndLoss(posted, accounts);
   const depreciationAccount = accountsByCode["6200"];
-  const depreciation = depreciationAccount ? normalAccountBalance(depreciationAccount, entries) : 0;
+  const depreciation = depreciationAccount ? normalAccountBalance(depreciationAccount, posted) : 0;
   const taxPaid = roundMoney(posted.filter((entry) => entry.lines.some((item) => item.accountCode === "2200" && item.debit > 0)).flatMap((entry) => entry.lines).filter((item) => accountsByCode[item.accountCode]?.cashFlow === "cash").reduce((sum, item) => sum + item.credit - item.debit, 0));
   const otherOperatingAdjustments = roundMoney(operating - pnl.profitBeforeTax - depreciation + taxPaid);
   const netChange = roundMoney(operating + investing + financing);
-  const endingCash = roundMoney(accounts.filter((account) => account.cashFlow === "cash").reduce((sum, account) => sum + normalAccountBalance(account, entries), 0));
-  return { profitBeforeTax: pnl.profitBeforeTax, depreciation, otherOperatingAdjustments, taxPaid, operating, investing, financing, netChange, openingCash: roundMoney(endingCash - netChange), endingCash, reconciled: Math.abs(netChange - endingCash) < 0.01 };
+  const openingEntries = allPosted.filter((entry) => entry.date < start);
+  const openingCash = roundMoney(accounts.filter((account) => account.cashFlow === "cash").reduce((sum, account) => sum + normalAccountBalance(account, openingEntries), 0));
+  const endingCash = roundMoney(accounts.filter((account) => account.cashFlow === "cash").reduce((sum, account) => sum + normalAccountBalance(account, allPosted), 0));
+  return { profitBeforeTax: pnl.profitBeforeTax, depreciation, otherOperatingAdjustments, taxPaid, operating, investing, financing, netChange, openingCash, endingCash, reconciled: Math.abs(openingCash + netChange - endingCash) < 0.01 };
 }
 
 const receiptExpenseAccount: Record<string, string> = {
@@ -225,16 +293,28 @@ const receiptExpenseAccount: Record<string, string> = {
   Others: "6500",
 };
 
+function accountingDate(value?: string) {
+  if (value && /^\d{4}-\d{2}-\d{2}$/.test(value)) return value;
+  if (value) {
+    const match = value.match(/^(\d{1,2})\s+([A-Za-z]{3})\s+(\d{4})$/);
+    const months: Record<string, string> = { Jan: "01", Feb: "02", Mar: "03", Apr: "04", May: "05", Jun: "06", Jul: "07", Aug: "08", Sep: "09", Oct: "10", Nov: "11", Dec: "12" };
+    if (match && months[match[2]]) return `${match[3]}-${months[match[2]]}-${match[1].padStart(2, "0")}`;
+  }
+  return new Intl.DateTimeFormat("en-CA", { timeZone: "Asia/Kuala_Lumpur", year: "numeric", month: "2-digit", day: "2-digit" }).format(new Date());
+}
+
 export function createReceiptJournal(receipt: AccountingReceipt, options: { privateAccountCode?: string } = {}): JournalEntry {
-  const businessAmount = roundMoney(receipt.taxUse === "Business" ? receipt.amount * Math.max(0, Math.min(100, receipt.businessUse)) / 100 : 0);
-  const privateAmount = roundMoney(receipt.amount - businessAmount);
+  const amount = roundMoney(Number(receipt.amount));
+  if (!Number.isFinite(amount) || amount <= 0) throw new RangeError("Receipt amount must be a positive finite number.");
+  const businessAmount = roundMoney(receipt.taxUse === "Business" ? amount * Math.max(0, Math.min(100, Number(receipt.businessUse) || 0)) / 100 : 0);
+  const privateAmount = roundMoney(amount - businessAmount);
   const lines: JournalLine[] = [];
   if (businessAmount) lines.push(line(receiptExpenseAccount[receipt.category] || "6500", businessAmount));
   if (privateAmount) lines.push(line(options.privateAccountCode || "1350", privateAmount));
-  lines.push(line("1010", 0, receipt.amount));
+  lines.push(line(receipt.paymentAccountCode || "1010", 0, amount));
   return {
     id: `receipt-${receipt.id}`,
-    date: "2026-08-03",
+    date: accountingDate(receipt.date),
     reference: `RCP-${receipt.id.slice(0, 8).toUpperCase()}`,
     description: `${receipt.merchant}${receipt.businessPurpose ? ` — ${receipt.businessPurpose}` : ""}`,
     source: "receipt",
@@ -248,19 +328,21 @@ export function createReceiptJournal(receipt: AccountingReceipt, options: { priv
 export function taxComputation(entries: JournalEntry[], accounts: Account[] = chartOfAccounts) {
   const accountsByCode = accounts === chartOfAccounts ? accountByCode : accountMap(accounts);
   const pnl = profitAndLoss(entries, accounts);
-  const addbacks = accounts.filter((account) => account.type === "expense" && (account.taxTreatment === "addback" || account.taxTreatment === "review") && account.code !== "6400").map((account) => ({ account, amount: Math.max(0, normalAccountBalance(account, entries)) })).filter((row) => row.amount > 0);
+  const addbacks = accounts.filter((account) => account.type === "expense" && account.taxTreatment === "addback" && account.code !== "6400").map((account) => ({ account, amount: Math.max(0, normalAccountBalance(account, entries)) })).filter((row) => row.amount > 0);
+  const reviewItems = accounts.filter((account) => account.type === "expense" && account.taxTreatment === "review").map((account) => ({ account, amount: Math.max(0, normalAccountBalance(account, entries)) })).filter((row) => row.amount > 0);
   const totalAddbacks = roundMoney(addbacks.reduce((sum, row) => sum + row.amount, 0));
+  const totalReview = roundMoney(reviewItems.reduce((sum, row) => sum + row.amount, 0));
   const fixedAssetCost = accountsByCode["1500"] ? Math.max(0, normalAccountBalance(accountsByCode["1500"], entries)) : 0;
   const provisionalCapitalAllowance = roundMoney(fixedAssetCost * 0.2);
   const adjustedIncome = roundMoney(pnl.profitBeforeTax + totalAddbacks);
   const statutoryIncome = roundMoney(Math.max(0, adjustedIncome - provisionalCapitalAllowance));
-  return { ...pnl, addbacks, totalAddbacks, fixedAssetCost, provisionalCapitalAllowance, adjustedIncome, statutoryIncome };
+  return { ...pnl, addbacks, reviewItems, totalAddbacks, totalReview, fixedAssetCost, provisionalCapitalAllowance, adjustedIncome, statutoryIncome };
 }
 
 export function reverseJournal(entry: JournalEntry): JournalEntry {
   return {
     id: `reverse-${entry.id}-${Date.now()}`,
-    date: "2026-08-03",
+    date: accountingDate(),
     reference: `REV-${entry.reference}`,
     description: `Reversal — ${entry.description}`,
     source: "reversal",

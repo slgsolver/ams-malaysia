@@ -50,7 +50,7 @@ import {
 } from "lucide-react";
 import { CSSProperties, FormEvent, useEffect, useMemo, useRef, useState } from "react";
 import CompanyAccounting, { CompanyAccountingView } from "./components/company-accounting";
-import { balanceSheet, cashFlowStatement, profitAndLoss, seedJournalEntries, seedSoleProprietorJournalEntries, soleProprietorChartOfAccounts, taxComputation } from "./lib/accounting";
+import { balanceSheet, cashFlowStatement, chartOfAccounts, profitAndLoss, sanitizeJournalEntries, seedJournalEntries, seedSoleProprietorJournalEntries, soleProprietorChartOfAccounts, taxComputation } from "./lib/accounting";
 import type { AccountingReceipt, JournalEntry } from "./lib/accounting";
 import { translateToChinese } from "./i18n";
 
@@ -69,6 +69,7 @@ type Receipt = {
   myInvoisUuid?: string;
   confidence: number;
   fileName?: string;
+  paymentAccountCode?: string;
 };
 
 const categoryMeta: Record<Category, { icon: typeof Fuel; tone: string }> = {
@@ -91,6 +92,84 @@ const categoryMeta: Record<Category, { icon: typeof Fuel; tone: string }> = {
   Zakat: { icon: BadgeCheck, tone: "green" },
   Others: { icon: MoreHorizontal, tone: "slate" },
 };
+
+const categoryValues = new Set<Category>(Object.keys(categoryMeta) as Category[]);
+const entityValues = new Set<Entity>(["personal", "business", "company"]);
+const taxUseValues = new Set<Receipt["taxUse"]>(["Business", "Relief", "Personal", "Review"]);
+
+function shortText(value: unknown, max: number) {
+  return typeof value === "string" ? value.trim().slice(0, max) : "";
+}
+
+function normalizeReceipt(value: unknown): Receipt | null {
+  if (!value || typeof value !== "object") return null;
+  const item = value as Partial<Receipt>;
+  const id = shortText(item.id, 160);
+  const merchant = shortText(item.merchant, 160);
+  const date = shortText(item.date, 40);
+  const amount = Number(item.amount);
+  const businessUse = Number(item.businessUse);
+  const confidence = Number(item.confidence);
+  if (!id || !merchant || !date || !Number.isFinite(amount) || amount <= 0 || amount > 999_999_999.99) return null;
+  if (!item.entity || !entityValues.has(item.entity) || !item.category || !categoryValues.has(item.category) || !item.taxUse || !taxUseValues.has(item.taxUse)) return null;
+  if (item.entity === "personal" && item.taxUse === "Business") return null;
+  if (item.entity !== "personal" && item.taxUse === "Relief") return null;
+  return {
+    id,
+    entity: item.entity,
+    merchant,
+    date,
+    amount: Math.round(amount * 100) / 100,
+    category: item.category,
+    taxUse: item.taxUse,
+    businessUse: Number.isFinite(businessUse) ? Math.max(0, Math.min(100, businessUse)) : 0,
+    businessPurpose: shortText(item.businessPurpose, 500) || undefined,
+    myInvoisUuid: shortText(item.myInvoisUuid, 160) || undefined,
+    confidence: Number.isFinite(confidence) ? Math.max(0, Math.min(100, Math.round(confidence))) : 0,
+    fileName: shortText(item.fileName, 240) || undefined,
+    paymentAccountCode: item.entity === "company" && ["1000", "1010", "2000", "2600"].includes(shortText(item.paymentAccountCode, 4)) ? shortText(item.paymentAccountCode, 4) : item.entity === "business" && ["1000", "1010", "2000", "3000"].includes(shortText(item.paymentAccountCode, 4)) ? shortText(item.paymentAccountCode, 4) : item.entity === "personal" ? undefined : "1010",
+  };
+}
+
+function csvCell(value: string | number) {
+  let text = String(value);
+  if (/^[=+\-@\t\r]/.test(text)) text = `'${text}`;
+  return `"${text.replaceAll('"', '""')}"`;
+}
+
+function normalizedHeader(value: string) {
+  return value.toLowerCase().replace(/[^a-z0-9]/g, "");
+}
+
+function moneyValue(value: unknown) {
+  if (typeof value === "number") return Number.isFinite(value) ? Math.abs(value) : 0;
+  const text = String(value ?? "").trim();
+  const negative = /^\(.*\)$/.test(text) || /^-/.test(text);
+  const amount = Number(text.replace(/[()RM$\s]/gi, "").replaceAll(",", ""));
+  return Number.isFinite(amount) ? Math.abs(negative ? -amount : amount) : 0;
+}
+
+function displayDate(value: unknown) {
+  const text = shortText(value, 40);
+  if (!text) return new Intl.DateTimeFormat("en-MY", { day: "2-digit", month: "short", year: "numeric" }).format(new Date());
+  if (/^\d{1,2}\s+[A-Za-z]{3}\s+\d{4}$/.test(text)) return text;
+  const parsed = new Date(text);
+  return Number.isNaN(parsed.valueOf()) ? text : new Intl.DateTimeFormat("en-MY", { day: "2-digit", month: "short", year: "numeric", timeZone: "Asia/Kuala_Lumpur" }).format(parsed);
+}
+
+function isoDate(value: string) {
+  if (/^\d{4}-\d{2}-\d{2}$/.test(value)) return value;
+  const parsed = new Date(value);
+  return Number.isNaN(parsed.valueOf()) ? "" : new Intl.DateTimeFormat("en-CA", { year: "numeric", month: "2-digit", day: "2-digit", timeZone: "Asia/Kuala_Lumpur" }).format(parsed);
+}
+
+function extractReceiptDate(text: string) {
+  const iso = text.match(/\b(20\d{2})[-/.](\d{1,2})[-/.](\d{1,2})\b/);
+  if (iso) return `${iso[1]}-${iso[2].padStart(2, "0")}-${iso[3].padStart(2, "0")}`;
+  const malaysia = text.match(/\b(\d{1,2})[-/.](\d{1,2})[-/.](20\d{2})\b/);
+  if (malaysia) return `${malaysia[3]}-${malaysia[2].padStart(2, "0")}-${malaysia[1].padStart(2, "0")}`;
+  return "";
+}
 
 const seedReceipts: Receipt[] = [
   { id: "1", entity: "company", merchant: "PETRONAS Station", date: "28 Jul 2026", amount: 120.5, category: "Petrol", taxUse: "Business", businessUse: 80, businessPurpose: "Client visit — Petaling Jaya", myInvoisUuid: "EI-98F2-71A0", confidence: 98 },
@@ -223,7 +302,7 @@ function filingSections(entity: Entity): FilingSection[] {
       { id: "pcb", label: "PCB / MTD", detail: "Employment tax deductions if Sim is also employed" },
     ]},
     { id: "declaration", title: "E · Declaration and supporting records", note: "Final e-B filing and audit support", items: [
-      { id: "myinvois", label: "MyInvois purchase and sales register", detail: "Validated references where applicable" },
+      { id: "myinvois", label: "MyInvois purchase and sales register", detail: "UUID references and separate validation evidence where applicable" },
       { id: "declaration", label: "Declaration of true and complete information", detail: "Review every income source and claim", required: true },
       { id: "retention", label: "Seven-year document retention", detail: "Keep accounts, invoices, receipts and working sheets", required: true },
     ]},
@@ -231,23 +310,10 @@ function filingSections(entity: Entity): FilingSection[] {
 }
 
 function defaultFilingChecks(entity: Entity): Record<string, boolean> {
-  if (entity === "personal") return {
-    "identity:id": true, "identity:contact": true, "identity:personal": true,
-    "relief:medical": true, "relief:lifestyle": true, "relief:insurance": true,
-    "payments:zakat": true, "declaration:retention": true,
-  };
-  if (entity === "company") return {
-    "company-profile:ssm": true, "company-profile:business-code": true, "company-profile:accounting-period": true,
-    "financial-statements:trial-balance": true, "financial-statements:profit-loss": true,
-    "financial-statements:balance-sheet": true, "financial-statements:cash-flow": true,
-    "mitrs:retention": true,
-  };
-  return {
-    "identity:id": true, "identity:contact": true,
-    "business-profile:business-name": true, "business-profile:business-code": true,
-    "profit-loss:sales": true, "profit-loss:expenses": true,
-    "declaration:retention": true,
-  };
+  // Readiness is a taxpayer confirmation, so no compliance item is pre-ticked.
+  // The entity argument is retained to keep saved checklists isolated by form.
+  void entity;
+  return {};
 }
 
 const monetaryFilingKeys = new Set([
@@ -279,7 +345,7 @@ function autoFilingAmount(key: string, receipts: Receipt[]): AutoFilingAmount | 
   };
   if (categoryMap[key]) return categoryTotal(categoryMap[key]);
   if (key === "profit-loss:expenses") {
-    const matched = receipts.filter((receipt) => receipt.entity === "business" && receipt.taxUse === "Business");
+    const matched = receipts.filter((receipt) => receipt.entity === "business" && receipt.taxUse === "Business" && receipt.businessUse > 0 && Boolean(receipt.businessPurpose?.trim()));
     return { amount: matched.reduce((sum, receipt) => sum + receipt.amount * receipt.businessUse / 100, 0), receiptCount: matched.length, source: "Sole proprietor receipts" };
   }
   if (key === "reliefs-payments:personal-reliefs") {
@@ -345,7 +411,6 @@ export default function Home() {
   const [processing, setProcessing] = useState(false);
   const [progress, setProgress] = useState(0);
   const [draft, setDraft] = useState<Receipt | null>(null);
-  const [, setUploadFile] = useState<File | null>(null);
   const [query, setQuery] = useState("");
   const [toast, setToast] = useState("");
   const [menuOpen, setMenuOpen] = useState(false);
@@ -360,8 +425,8 @@ export default function Home() {
 
   const entityReceipts = useMemo(() => receipts.filter((item) => item.entity === entity), [receipts, entity]);
   const entityInvoices = useMemo(() => entityReceipts.filter((item) => item.myInvoisUuid), [entityReceipts]);
-  const companyAccountingReceipts = useMemo<AccountingReceipt[]>(() => receipts.filter((item) => item.entity === "company").map((item) => ({ id: item.id, merchant: item.merchant, amount: item.amount, category: item.category, businessUse: item.businessUse, taxUse: item.taxUse, businessPurpose: item.businessPurpose, fileName: item.fileName })), [receipts]);
-  const soleProprietorAccountingReceipts = useMemo<AccountingReceipt[]>(() => receipts.filter((item) => item.entity === "business").map((item) => ({ id: item.id, merchant: item.merchant, amount: item.amount, category: item.category, businessUse: item.businessUse, taxUse: item.taxUse, businessPurpose: item.businessPurpose, fileName: item.fileName })), [receipts]);
+  const companyAccountingReceipts = useMemo<AccountingReceipt[]>(() => receipts.filter((item) => item.entity === "company").map((item) => ({ id: item.id, merchant: item.merchant, date: item.date, amount: item.amount, category: item.category, businessUse: item.businessUse, taxUse: item.taxUse, businessPurpose: item.businessPurpose, fileName: item.fileName, paymentAccountCode: item.paymentAccountCode })), [receipts]);
+  const soleProprietorAccountingReceipts = useMemo<AccountingReceipt[]>(() => receipts.filter((item) => item.entity === "business").map((item) => ({ id: item.id, merchant: item.merchant, date: item.date, amount: item.amount, category: item.category, businessUse: item.businessUse, taxUse: item.taxUse, businessPurpose: item.businessPurpose, fileName: item.fileName, paymentAccountCode: item.paymentAccountCode })), [receipts]);
   const totals = useMemo(() => {
     const total = entityReceipts.reduce((sum, item) => sum + item.amount, 0);
     const business = entityReceipts.filter((item) => item.taxUse === "Business").reduce((sum, item) => sum + item.amount * item.businessUse / 100, 0);
@@ -393,13 +458,14 @@ export default function Home() {
     try {
       const stored = window.localStorage.getItem("ams-receipts");
       if (stored) {
-        let savedReceipts = JSON.parse(stored);
+        let savedReceipts: unknown = JSON.parse(stored);
         if (Array.isArray(savedReceipts) && !window.localStorage.getItem("ams-company-entity-v1-migrated")) {
           savedReceipts = savedReceipts.map((receipt) => receipt?.entity === "business" ? { ...receipt, entity: "company" } : receipt);
           window.localStorage.setItem("ams-company-entity-v1-migrated", "true");
         }
+        const hydrated = Array.isArray(savedReceipts) ? savedReceipts.map(normalizeReceipt).filter((receipt): receipt is Receipt => Boolean(receipt)) : [];
         // eslint-disable-next-line react-hooks/set-state-in-effect -- hydrate saved receipt records after mount
-        if (Array.isArray(savedReceipts)) setReceipts(savedReceipts);
+        if (Array.isArray(savedReceipts)) setReceipts(hydrated);
       }
     } catch {
       // Keep the built-in examples when the browser blocks local storage.
@@ -410,7 +476,12 @@ export default function Home() {
   }, []);
 
   useEffect(() => {
-    if (receiptsReady) window.localStorage.setItem("ams-receipts", JSON.stringify(receipts));
+    if (!receiptsReady) return;
+    try {
+      window.localStorage.setItem("ams-receipts", JSON.stringify(receipts));
+    } catch {
+      // The current page remains usable; the Audit Pack is the fallback backup.
+    }
   }, [receipts, receiptsReady]);
 
   useEffect(() => {
@@ -476,9 +547,12 @@ export default function Home() {
       const saved = window.localStorage.getItem(`ams-filing-${entity}`);
       if (!saved) return;
       const profile = JSON.parse(saved);
-      if (profile?.checklist) setFilingChecks({ ...defaults, ...profile.checklist });
-      if (profile?.amounts) setFilingAmounts(profile.amounts);
-      if (Array.isArray(profile?.manualAmountKeys)) setManualAmountKeys(profile.manualAmountKeys);
+      const checks = profile?.checklist && typeof profile.checklist === "object" && !Array.isArray(profile.checklist) ? Object.fromEntries(Object.entries(profile.checklist).filter(([key, value]) => key.length <= 160 && typeof value === "boolean")) as Record<string, boolean> : {};
+      const amounts = profile?.amounts && typeof profile.amounts === "object" && !Array.isArray(profile.amounts) ? Object.fromEntries(Object.entries(profile.amounts).filter(([key, value]) => key.length <= 160 && typeof value === "number" && Number.isFinite(value) && value >= 0 && value <= 999_999_999.99)) as Record<string, number> : {};
+      const manualKeys = Array.isArray(profile?.manualAmountKeys) ? profile.manualAmountKeys.filter((key: unknown): key is string => typeof key === "string" && key in amounts) : [];
+      setFilingChecks({ ...defaults, ...checks });
+      setFilingAmounts(amounts);
+      setManualAmountKeys(manualKeys);
     } catch {
       // Use the form defaults when the browser blocks local storage.
     }
@@ -507,11 +581,22 @@ export default function Home() {
   }
 
   async function handleFile(file: File) {
-    setUploadFile(file);
+    const allowedTypes = new Set(["image/png", "image/jpeg", "image/webp"]);
+    if (!allowedTypes.has(file.type) || !/\.(png|jpe?g|webp)$/i.test(file.name)) {
+      setToast("Use a JPG, PNG or WEBP receipt image.");
+      setTimeout(() => setToast(""), 3200);
+      return;
+    }
+    if (file.size <= 0 || file.size > 10 * 1024 * 1024) {
+      setToast("Receipt image must be between 1 byte and 10 MB.");
+      setTimeout(() => setToast(""), 3200);
+      return;
+    }
     setProcessing(true);
     setDraft(null);
     setProgress(12);
-    let text = file.name.replace(/[-_]/g, " ");
+    const fileLabel = file.name.replace(/[-_]/g, " ");
+    let ocrText = "";
     try {
       const Tesseract = await import("tesseract.js");
       const result = await Tesseract.recognize(file, "eng", {
@@ -519,12 +604,13 @@ export default function Home() {
           if (message.status === "recognizing text") setProgress(Math.max(18, Math.round(message.progress * 88)));
         },
       });
-      text += ` ${result.data.text}`;
+      ocrText = result.data.text;
     } catch {
       setProgress(86);
     }
-    const lines = text.split(/\n/).map((line) => line.trim()).filter(Boolean);
-    const merchant = lines.find((line) => /[a-z]{3}/i.test(line))?.replace(/\.(jpg|jpeg|png|webp|pdf)$/i, "") || "New receipt";
+    const text = `${ocrText}\n${fileLabel}`;
+    const lines = ocrText.split(/\n/).map((line) => line.trim()).filter(Boolean);
+    const merchant = lines.find((line) => /[a-z]{3}/i.test(line) && line.length <= 80)?.replace(/\.(jpg|jpeg|png|webp|pdf)$/i, "") || fileLabel.replace(/\.(jpg|jpeg|png|webp)$/i, "") || "New receipt";
     const category = classify(text);
     const amount = extractAmount(text) || 0;
     setProgress(100);
@@ -532,7 +618,7 @@ export default function Home() {
       id: crypto.randomUUID(),
       entity,
       merchant: merchant.slice(0, 34),
-      date: new Intl.DateTimeFormat("en-MY", { day: "2-digit", month: "short", year: "numeric" }).format(new Date()),
+      date: displayDate(extractReceiptDate(text) || new Date().toISOString()),
       amount,
       category,
       taxUse: entity === "personal" ? (["Medical", "Lifestyle", "Education", "Insurance", "EPF & SOCSO", "Zakat"] as Category[]).includes(category) ? "Relief" : "Personal" : category === "Entertainment" ? "Review" : "Business",
@@ -540,6 +626,7 @@ export default function Home() {
       businessPurpose: "",
       confidence: category === "Others" ? 72 : 93,
       fileName: file.name,
+      paymentAccountCode: entity === "personal" ? undefined : "1010",
     });
     setProcessing(false);
   }
@@ -547,23 +634,29 @@ export default function Home() {
   function saveReceipt(event: FormEvent) {
     event.preventDefault();
     if (!draft) return;
-    setReceipts((current) => [draft, ...current]);
+    const normalized = normalizeReceipt(draft);
+    if (!normalized) {
+      setToast("Enter a merchant, date and an amount greater than RM0.00.");
+      setTimeout(() => setToast(""), 3200);
+      return;
+    }
+    const existing = receipts.some((item) => item.id === normalized.id);
+    setReceipts((current) => existing ? current.map((item) => item.id === normalized.id ? normalized : item) : [normalized, ...current]);
     setUploadOpen(false);
     setDraft(null);
-    setUploadFile(null);
-    setToast("Receipt saved on this browser and included in your tax summary.");
+    setToast(existing ? "Receipt updated. Any linked draft journal was refreshed." : "Receipt saved on this browser and included in your tax summary.");
     setTimeout(() => setToast(""), 3200);
   }
 
   function exportCsv() {
-    const header = "Date,Merchant,Category,Tax use,Business use %,Gross amount (MYR),Claimable amount (MYR),Business purpose,MyInvois UUID";
-    const rows = entityReceipts.map((r) => [r.date, `\"${r.merchant.replaceAll('"', '""')}\"`, r.category, r.taxUse, r.businessUse, r.amount.toFixed(2), (r.taxUse === "Business" ? r.amount * r.businessUse / 100 : r.amount).toFixed(2), `\"${r.businessPurpose || ""}\"`, r.myInvoisUuid || ""].join(","));
-    const blob = new Blob([[header, ...rows].join("\n")], { type: "text/csv" });
+    const header = "Date,Merchant,Category,Tax use,Business use %,Gross amount (MYR),Claimable amount (MYR),Payment account,Business purpose,MyInvois UUID";
+    const rows = entityReceipts.map((r) => [csvCell(r.date), csvCell(r.merchant), csvCell(r.category), csvCell(r.taxUse), r.businessUse, r.amount.toFixed(2), (r.taxUse === "Business" ? r.amount * r.businessUse / 100 : r.taxUse === "Relief" ? r.amount : 0).toFixed(2), csvCell(r.paymentAccountCode || ""), csvCell(r.businessPurpose || ""), csvCell(r.myInvoisUuid || "")].join(","));
+    const blob = new Blob([`\uFEFF${[header, ...rows].join("\n")}`], { type: "text/csv;charset=utf-8" });
     const link = document.createElement("a");
     link.href = URL.createObjectURL(blob);
     link.download = `AMS-2026-${isCompany ? "Solver-Academy-Sdn-Bhd-Form-C" : isPersonal ? "Sim-Lip-Geap-Form-BE" : "Sim-Lip-Geap-Form-B"}.csv`;
     link.click();
-    URL.revokeObjectURL(link.href);
+    setTimeout(() => URL.revokeObjectURL(link.href), 0);
     setToast("Tax summary exported as CSV.");
     setTimeout(() => setToast(""), 3200);
   }
@@ -576,7 +669,7 @@ export default function Home() {
         const stored = window.localStorage.getItem(isCompany ? "ams-company-journals-v1" : "ams-sole-proprietor-journals-v1");
         if (stored) {
           const parsed = JSON.parse(stored);
-          if (Array.isArray(parsed)) accountingJournals = parsed;
+          if (Array.isArray(parsed)) accountingJournals = sanitizeJournalEntries(parsed, accountingChart || chartOfAccounts);
         }
       } catch {
         // Export the selected built-in ledger when browser storage is unavailable.
@@ -588,7 +681,7 @@ export default function Home() {
       yearOfAssessment: 2026,
       form: `Form ${activeForm}`,
       generatedAt: new Date().toISOString(),
-      sevenYearRetentionUntil: "31 Dec 2033",
+      sevenYearRetentionUntil: "31 Dec 2034 (indicative if the YA 2026 return is filed during 2027; recalculate from the end of the actual filing year)",
       summary: { grossExpenses: totals.total, potentialBusinessDeductions: totals.business, personalReliefReceipts: totals.relief },
       receipts: entityReceipts,
       bankReconciliation: bankRows,
@@ -609,20 +702,42 @@ export default function Home() {
     link.href = URL.createObjectURL(blob);
     link.download = `AMS-YA2026-Form${activeForm}-Audit-Pack.json`;
     link.click();
-    URL.revokeObjectURL(link.href);
+    setTimeout(() => URL.revokeObjectURL(link.href), 0);
     setToast("Seven-year Audit Pack downloaded.");
     setTimeout(() => setToast(""), 3200);
   }
 
   async function importBankStatement(file: File) {
+    if (!/\.csv$/i.test(file.name) || file.size <= 0 || file.size > 5 * 1024 * 1024) {
+      setToast("Use a non-empty CSV bank statement up to 5 MB.");
+      setTimeout(() => setToast(""), 3600);
+      return;
+    }
     const text = await file.text();
-    const lines = text.split(/\r?\n/).filter((line) => line.trim());
+    const lines = text.replace(/^\uFEFF/, "").split(/\r?\n/).filter((line) => line.trim()).slice(0, 10_001);
+    const headers = parseCsvLine(lines[0] || "").map(normalizedHeader);
+    const column = (...names: string[]) => headers.findIndex((header) => names.includes(header));
+    const dateIndex = column("date", "transactiondate", "valuedate", "tarikh");
+    const descriptionIndex = column("description", "transactiondescription", "details", "narrative", "reference", "butiran");
+    const amountIndex = column("amount", "transactionamount", "amaun");
+    const debitIndex = column("debit", "withdrawal", "moneyout", "keluar");
+    const creditIndex = column("credit", "deposit", "moneyin", "masuk");
+    if (dateIndex < 0 || descriptionIndex < 0 || (amountIndex < 0 && debitIndex < 0 && creditIndex < 0)) {
+      setToast("CSV needs Date, Description and Amount columns (or Debit/Credit columns).");
+      setTimeout(() => setToast(""), 3600);
+      return;
+    }
+    const usedReceiptIds = new Set<string>();
     const parsed = lines.slice(1).map((line) => {
       const cells = parseCsvLine(line);
-      const amountIndex = cells.findLastIndex((cell) => Number.isFinite(Number(cell.replace(/[RM,$\s]/gi, "").replaceAll(",", ""))));
-      const amount = amountIndex >= 0 ? Math.abs(Number(cells[amountIndex].replace(/[RM,$\s]/gi, "").replaceAll(",", ""))) : 0;
-      const match = entityReceipts.find((receipt) => Math.abs(receipt.amount - amount) < 0.01);
-      return { date: cells[0] || "—", description: cells[1] || cells[0] || "Bank transaction", amount, matched: match?.merchant || "", status: match ? "Matched" : "Missing receipt" };
+      const amount = amountIndex >= 0 ? moneyValue(cells[amountIndex]) : Math.max(moneyValue(cells[debitIndex]), moneyValue(cells[creditIndex]));
+      const description = shortText(cells[descriptionIndex], 300) || "Bank transaction";
+      const candidates = entityReceipts.filter((receipt) => !usedReceiptIds.has(receipt.id) && (receipt.paymentAccountCode || "1010") === "1010" && Math.abs(receipt.amount - amount) < 0.01);
+      const descriptionWords = description.toLowerCase().split(/[^a-z0-9]+/).filter((word) => word.length >= 4);
+      const scored = candidates.map((receipt) => ({ receipt, score: descriptionWords.filter((word) => receipt.merchant.toLowerCase().includes(word)).length + (receipt.date.toLowerCase().includes((cells[dateIndex] || "").toLowerCase()) ? 2 : 0) })).sort((a, b) => b.score - a.score);
+      const match = candidates.length === 1 || (scored[0]?.score > (scored[1]?.score || 0) && scored[0].score > 0) ? scored[0]?.receipt : undefined;
+      if (match) usedReceiptIds.add(match.id);
+      return { date: shortText(cells[dateIndex], 40) || "—", description, amount, matched: match?.merchant || "", status: match ? "Matched" : "Missing receipt" };
     }).filter((row) => row.amount > 0);
     if (!parsed.length) {
       setToast("No transactions found. Use CSV columns: Date, Description, Amount.");
@@ -631,6 +746,51 @@ export default function Home() {
       setToast(`${file.name} imported — ${parsed.filter((row) => row.status === "Matched").length} matches found.`);
     }
     setTimeout(() => setToast(""), 3600);
+  }
+
+  async function importMyInvois(file: File) {
+    if (!/\.(csv|json)$/i.test(file.name) || file.size <= 0 || file.size > 5 * 1024 * 1024) {
+      setToast("Use a non-empty MyInvois CSV or JSON file up to 5 MB.");
+      setTimeout(() => setToast(""), 3600);
+      return;
+    }
+    try {
+      const text = await file.text();
+      let records: Record<string, unknown>[] = [];
+      if (/\.json$/i.test(file.name)) {
+        const parsed: unknown = JSON.parse(text);
+        const source = Array.isArray(parsed) ? parsed : parsed && typeof parsed === "object" && Array.isArray((parsed as { documents?: unknown }).documents) ? (parsed as { documents: unknown[] }).documents : parsed && typeof parsed === "object" && Array.isArray((parsed as { invoices?: unknown }).invoices) ? (parsed as { invoices: unknown[] }).invoices : [];
+        records = source.filter((item): item is Record<string, unknown> => Boolean(item) && typeof item === "object" && !Array.isArray(item)).slice(0, 10_000);
+      } else {
+        const lines = text.replace(/^\uFEFF/, "").split(/\r?\n/).filter((line) => line.trim()).slice(0, 10_001);
+        const headers = parseCsvLine(lines[0] || "").map(normalizedHeader);
+        records = lines.slice(1).map((line) => Object.fromEntries(headers.map((header, index) => [header, parseCsvLine(line)[index] ?? ""])));
+      }
+      const read = (record: Record<string, unknown>, ...names: string[]) => {
+        const entries = Object.entries(record);
+        return entries.find(([key]) => names.includes(normalizedHeader(key)))?.[1];
+      };
+      const knownUuids = new Set(receipts.filter((item) => item.entity === entity && item.myInvoisUuid).map((item) => item.myInvoisUuid!.toLowerCase()));
+      const additions: Receipt[] = [];
+      for (const record of records) {
+        const uuid = shortText(read(record, "uuid", "invoiceuuid", "myinvoisuuid", "longid"), 160);
+        const merchant = shortText(read(record, "merchant", "supplier", "suppliername", "issuername", "sellername"), 160);
+        const amount = moneyValue(read(record, "amount", "totalamount", "invoicetotal", "payableamount", "totalpayableamount"));
+        if (!uuid || !merchant || amount <= 0 || knownUuids.has(uuid.toLowerCase())) continue;
+        const description = shortText(read(record, "description", "itemdescription", "classification"), 500);
+        const category = classify(`${merchant} ${description}`);
+        additions.push({ id: crypto.randomUUID(), entity, merchant, date: displayDate(read(record, "date", "invoicedate", "issuedate")), amount, category, taxUse: "Review", businessUse: 0, businessPurpose: description || undefined, myInvoisUuid: uuid, confidence: category === "Others" ? 65 : 85, fileName: file.name, paymentAccountCode: "2000" });
+        knownUuids.add(uuid.toLowerCase());
+      }
+      if (!additions.length) setToast("No new invoice found. Check that UUID, supplier, date and total amount columns are present.");
+      else {
+        setReceipts((current) => [...additions, ...current]);
+        setToast(`${additions.length} MyInvois reference${additions.length === 1 ? "" : "s"} imported for review.`);
+      }
+    } catch {
+      setToast("MyInvois file could not be read. Check the CSV or JSON format.");
+    }
+    setTimeout(() => setToast(""), 4000);
   }
 
   return (
@@ -701,29 +861,29 @@ export default function Home() {
               <div className="panel tax-readiness"><div className="panel-head"><div><h3>Tax readiness</h3><p>Form {currentForm} · YA 2026</p></div><span className="score">{filingPercent}%</span></div><div className="donut" style={{ background: `conic-gradient(var(--green) 0 ${filingPercent}%, #edf0ed ${filingPercent}%)` }}><div><strong>{filingPercent}%</strong><span>ready</span></div></div><ul><li><span className="dot green"></span><div><b>{entityReceipts.length - totals.review} receipts categorised</b><small>{isPersonal ? "Relief and personal spend separated" : isCompany ? "Company records documented" : "Sole proprietor records documented"}</small></div><Check /></li><li><span className="dot orange"></span><div><b>{totals.review} receipt needs attention</b><small>{isPersonal ? "Relief eligibility not confirmed" : "Business purpose not confirmed"}</small></div><ChevronRight /></li></ul><button className="text-button" onClick={() => setTab(isCompany ? "ledger" : "tax")}>{isCompany ? "Open General Ledger" : "Open tax checklist"} <ArrowUpRight /></button></div>
             </section>
 
-            <ReceiptTable entity={entity} receipts={filtered.slice(0, 5)} query={query} setQuery={setQuery} onViewAll={() => setTab("receipts")} />
+            <ReceiptTable entity={entity} receipts={filtered.slice(0, 5)} query={query} setQuery={setQuery} onViewAll={() => setTab("receipts")} onEdit={(receipt) => { setDraft(receipt); setUploadOpen(true); }} onExport={exportCsv} />
           </div>
         )}
 
-        {tab === "receipts" && <div className="content"><ReceiptTable entity={entity} receipts={filtered} query={query} setQuery={setQuery} onViewAll={() => setUploadOpen(true)} full /></div>}
+        {tab === "receipts" && <div className="content"><ReceiptTable entity={entity} receipts={filtered} query={query} setQuery={setQuery} onViewAll={() => { setDraft(null); setUploadOpen(true); }} onEdit={(receipt) => { setDraft(receipt); setUploadOpen(true); }} onExport={exportCsv} full /></div>}
 
         {tab === "bank" && (
           <div className="content feature-page">
             <section className="feature-hero compact"><div><span className="pill"><Landmark /> Bank matching</span><h2>Find payments without receipts.</h2><p>Import a Malaysian bank or e-wallet CSV. AMS matches amount, date and merchant so nothing is missed.</p></div><label className="dark-button file-button"><FileUp /> Import statement<input type="file" accept=".csv,text/csv" onChange={(e) => e.target.files?.[0] && importBankStatement(e.target.files[0])} /></label></section>
             <section className="metric-grid bank-metrics"><article><div className="metric-icon mint"><BadgeCheck /></div><span>Auto-matched</span><strong>{bankRows.filter((r) => r.status === "Matched").length}</strong><small>{currency(bankRows.filter((r) => r.status === "Matched").reduce((s, r) => s + r.amount, 0))} linked to receipts</small></article><article><div className="metric-icon yellow"><AlertCircle /></div><span>Missing receipts</span><strong>{bankRows.filter((r) => r.status !== "Matched").length}</strong><small>{currency(bankRows.filter((r) => r.status !== "Matched").reduce((s, r) => s + r.amount, 0))} needs evidence</small></article><article><div className="metric-icon lavender"><WalletCards /></div><span>Statement total</span><strong>{currency(bankRows.reduce((s, r) => s + r.amount, 0))}</strong><small>Latest CSV import</small></article><article><div className="metric-icon peach"><ShieldCheck /></div><span>Match rate</span><strong>{Math.round(bankRows.filter((r) => r.status === "Matched").length / Math.max(bankRows.length, 1) * 100)}%</strong><small>{bankRows.filter((r) => r.status === "Matched").length} of {bankRows.length} transactions</small></article></section>
-            <section className="panel data-panel"><div className="panel-head"><div><h3>Imported statement</h3><p>CSV matching by amount and receipt record</p></div><span className="safe-chip"><ShieldCheck /> Private</span></div><div className="table-wrap"><table><thead><tr><th>Date</th><th>Bank description</th><th>Matched receipt</th><th>Status</th><th>Amount</th></tr></thead><tbody>{bankRows.map((item, index) => <tr key={`${item.description}-${index}`}><td>{item.date}</td><td><strong>{item.description}</strong></td><td>{item.matched || <button className="link-action" onClick={() => setUploadOpen(true)}>+ Add receipt</button>}</td><td><span className={`match-status ${item.status === "Matched" ? "matched" : "missing"}`}>{item.status === "Matched" ? <Check /> : <AlertCircle />}{item.status}</span></td><td><strong>{currency(item.amount)}</strong></td></tr>)}</tbody></table></div></section>
+            <section className="panel data-panel"><div className="panel-head"><div><h3>Imported statement</h3><p>CSV matching by amount and receipt record</p></div><span className="safe-chip"><ShieldCheck /> Browser-local</span></div><div className="table-wrap"><table><thead><tr><th>Date</th><th>Bank description</th><th>Matched receipt</th><th>Status</th><th>Amount</th></tr></thead><tbody>{bankRows.map((item, index) => <tr key={`${item.description}-${index}`}><td>{item.date}</td><td><strong>{item.description}</strong></td><td>{item.matched || <button className="link-action" onClick={() => { setDraft(null); setUploadOpen(true); }}>+ Add receipt</button>}</td><td><span className={`match-status ${item.status === "Matched" ? "matched" : "missing"}`}>{item.status === "Matched" ? <Check /> : <AlertCircle />}{item.status}</span></td><td><strong>{currency(item.amount)}</strong></td></tr>)}</tbody></table></div></section>
           </div>
         )}
 
         {tab === "myinvois" && (
           <div className="content feature-page">
-            <section className="feature-hero myinvois-hero"><div><span className="pill"><ScanLine /> Malaysia e-Invoice</span><h2>Keep receipts and MyInvois together.</h2><p>{currentName} · {currentAccountLabel}. Imported UUID records remain inside this selected account.</p><div className="hero-actions"><label className="dark-button file-button"><FileUp /> Import MyInvois file<input type="file" accept=".csv,.json,application/json,text/csv" onChange={(e) => { if (e.target.files?.[0]) { setToast("MyInvois file checked and imported."); setTimeout(() => setToast(""), 3200); } }} /></label><button className="secondary" onClick={() => setToast("QR scanner is ready for a supported camera device.")}><ScanLine /> Scan QR</button></div></div><div className="einvoice-card"><span className="einvoice-brand">MY<span>INVOIS</span></span><div className="qr-placeholder"><ScanLine /></div><small>{entityInvoices.length ? "VALIDATED" : "AWAITING IMPORT"}</small><strong>{entityInvoices[0]?.myInvoisUuid || "No UUID yet"}</strong><p>{entityInvoices[0] ? `${entityInvoices[0].merchant} · ${currency(entityInvoices[0].amount)}` : `${currentName} · ${currentAccountLabel}`}</p><span className="verified-line">{entityInvoices.length ? <Check /> : <AlertCircle />}{entityInvoices.length ? "Receipt linked" : "Import a MyInvois file"}</span></div></section>
-            <section className="integration-grid"><article className="panel"><span className="mini-icon green"><BadgeCheck /></span><div><h3>{entityInvoices.length} validated documents</h3><p>UUID references recorded</p></div></article><article className="panel"><span className="mini-icon yellow"><AlertCircle /></span><div><h3>{entityReceipts.length - entityInvoices.length} receipts without UUID</h3><p>Normal receipt or exempt supplier</p></div></article><article className="panel"><span className="mini-icon violet"><ShieldCheck /></span><div><h3>Account isolation</h3><p>No records from another taxpayer appear here</p></div></article></section>
-            <section className="panel data-panel"><div className="panel-head"><div><h3>e-Invoice register</h3><p>{currentName} · {currentAccountLabel}</p></div><a href="https://mytax.hasil.gov.my" target="_blank" rel="noreferrer" className="text-button">Open MyTax <ArrowUpRight /></a></div><div className="einvoice-list">{entityInvoices.map((receipt) => { const Icon = categoryMeta[receipt.category].icon; return <div key={receipt.id}><span className="cat-icon green"><Icon /></span><p><b>{receipt.merchant}</b><small>{receipt.date} · {receipt.category}</small></p><code>{receipt.myInvoisUuid}</code><strong>{currency(receipt.amount)}</strong><span className="status-ready"><Check /> Linked</span></div>; })}{!entityInvoices.length && <div className="empty-invoices"><ScanLine /><p><b>No MyInvois records in this account</b><small>Import a validated file or add a UUID to a receipt.</small></p></div>}</div></section>
+            <section className="feature-hero myinvois-hero"><div><span className="pill"><ScanLine /> Malaysia e-Invoice</span><h2>Keep receipts and MyInvois together.</h2><p>{currentName} · {currentAccountLabel}. Imported UUID records remain inside this selected account and are marked Review until you confirm their business treatment.</p><div className="hero-actions"><label className="dark-button file-button"><FileUp /> Import MyInvois file<input type="file" accept=".csv,.json,application/json,text/csv" onChange={(e) => e.target.files?.[0] && importMyInvois(e.target.files[0])} /></label><button className="secondary" disabled title="Camera QR verification is not enabled in this browser-local version"><ScanLine /> QR scan unavailable</button></div></div><div className="einvoice-card"><span className="einvoice-brand">MY<span>INVOIS</span></span><div className="qr-placeholder"><ScanLine /></div><small>{entityInvoices.length ? "UUID RECORDED" : "AWAITING IMPORT"}</small><strong>{entityInvoices[0]?.myInvoisUuid || "No UUID yet"}</strong><p>{entityInvoices[0] ? `${entityInvoices[0].merchant} · ${currency(entityInvoices[0].amount)}` : `${currentName} · ${currentAccountLabel}`}</p><span className="verified-line">{entityInvoices.length ? <Check /> : <AlertCircle />}{entityInvoices.length ? "Reference linked" : "Import a MyInvois file"}</span></div></section>
+            <section className="integration-grid"><article className="panel"><span className="mini-icon green"><BadgeCheck /></span><div><h3>{entityInvoices.length} UUID-linked documents</h3><p>Recorded references; not API-validated by AMS</p></div></article><article className="panel"><span className="mini-icon yellow"><AlertCircle /></span><div><h3>{entityReceipts.length - entityInvoices.length} receipts without UUID</h3><p>Normal receipt or exempt supplier</p></div></article><article className="panel"><span className="mini-icon violet"><ShieldCheck /></span><div><h3>Account isolation</h3><p>No records from another taxpayer appear here</p></div></article></section>
+            <section className="panel data-panel"><div className="panel-head"><div><h3>e-Invoice register</h3><p>{currentName} · {currentAccountLabel}</p></div><a href="https://mytax.hasil.gov.my" target="_blank" rel="noreferrer" className="text-button">Open MyTax <ArrowUpRight /></a></div><div className="einvoice-list">{entityInvoices.map((receipt) => { const Icon = categoryMeta[receipt.category].icon; return <div key={receipt.id}><span className="cat-icon green"><Icon /></span><p><b>{receipt.merchant}</b><small>{receipt.date} · {receipt.category}</small></p><code>{receipt.myInvoisUuid}</code><strong>{currency(receipt.amount)}</strong><span className="status-ready"><Check /> Recorded</span></div>; })}{!entityInvoices.length && <div className="empty-invoices"><ScanLine /><p><b>No MyInvois records in this account</b><small>Import a CSV/JSON file or add a UUID to a receipt.</small></p></div>}</div></section>
           </div>
         )}
 
-        {!isPersonal && ((["ledger", "pl", "balance", "cashflow"] as string[]).includes(tab) || (isCompany && tab === "tax")) && <CompanyAccounting key={isCompany ? "company-ledger" : "sole-proprietor-ledger"} mode={isCompany ? "company" : "soleProprietor"} view={tab as CompanyAccountingView} receipts={isCompany ? companyAccountingReceipts : soleProprietorAccountingReceipts} onToast={(message) => { setToast(message); setTimeout(() => setToast(""), 3600); }} />}
+        {!isPersonal && (["ledger", "pl", "balance", "cashflow", "tax"] as string[]).includes(tab) && <CompanyAccounting key={isCompany ? "company-ledger" : "sole-proprietor-ledger"} mode={isCompany ? "company" : "soleProprietor"} view={tab as CompanyAccountingView} receipts={isCompany ? companyAccountingReceipts : soleProprietorAccountingReceipts} onToast={(message) => { setToast(message); setTimeout(() => setToast(""), 3600); }} />}
 
         {tab === "filing" && (
           <div className="content filing-page">
@@ -788,15 +948,6 @@ export default function Home() {
           </div>
         )}
 
-        {tab === "tax" && entity === "business" && (
-          <div className="content tax-page">
-            <div className="tax-switch"><button className="active">Form B <small>Sim Lip Geap · sole proprietor</small></button></div>
-            <section className="form-warning"><ShieldCheck /><div><strong>You selected Form B</strong><p>This return belongs to Sim Lip Geap as an individual carrying on business. Solver Academy Sdn. Bhd. is excluded.</p></div></section>
-            <section className="report-hero"><div><span className="pill"><FileCheck2 /> YA 2026 preparation</span><h2>Sole proprietor records, kept separate.</h2><p>Claimable figures use the confirmed business-use percentage. Final deductibility and YA rules still require review.</p></div><button className="dark-button" onClick={exportCsv}><Download /> Export Form B summary</button></section>
-            <section className="report-grid"><div className="panel"><div className="panel-head"><div><h3>Sim Lip Geap · Potential business deductions</h3><p>Sole proprietor receipts only</p></div><strong>{currency(totals.business)}</strong></div>{Object.entries(categoryMeta).map(([category, meta]) => { const items = entityReceipts.filter((receipt) => receipt.category === category && receipt.taxUse === "Business"); const amount = items.reduce((sum, receipt) => sum + receipt.amount * receipt.businessUse / 100, 0); if (!amount) return null; const Icon = meta.icon; return <div className="deduction-row" key={category}><span className={`cat-icon ${meta.tone}`}><Icon /></span><div><b>{category}</b><small>{items.length} receipt{items.length > 1 ? "s" : ""} · business-use adjusted</small></div><strong>{currency(amount)}</strong><span className="status-ready"><Check /> Recorded</span></div>; })}{!entityReceipts.length && <div className="empty-business"><BriefcaseBusiness /><h3>No sole proprietor receipts yet</h3><p>Upload a Form B business receipt to begin the separate expense register.</p><button className="primary" onClick={() => setUploadOpen(true)}><Plus /> Upload Form B receipt</button></div>}</div><aside className="panel filing-note"><span className="mini-icon"><AlertCircle /></span><h3>Before e-B filing</h3><p>Form B combines the individual’s business income with other personal income, reliefs, rebates and CP500 payments.</p><ol><li>Confirm every business purpose</li><li>Review private-use adjustments</li><li>Keep records for seven years</li></ol><button className="text-button" onClick={() => setTab("filing")}>Open Form B checklist <ArrowUpRight /></button></aside></section>
-          </div>
-        )}
-
         {tab === "tax" && entity === "personal" && (
           <div className="content tax-page">
             <div className="tax-switch"><button className="active">Form BE <small>Sim Lip Geap · selected</small></button></div>
@@ -808,8 +959,8 @@ export default function Home() {
 
         {tab === "audit" && (
           <div className="content feature-page">
-            <section className="feature-hero audit-hero"><div><span className="pill"><Archive /> LHDN record support</span><h2>One evidence pack. Seven-year-ready.</h2><p>Bundle your receipt register, business purpose, bank matching and MyInvois references for your accountant or future review.</p><button className="dark-button" onClick={downloadAuditPack}><Download /> Download Audit Pack</button></div><div className="archive-visual"><Archive /><strong>YA 2026</strong><span>Retention target</span><b>31 Dec 2033</b></div></section>
-            <section className="audit-grid"><article className="panel"><span className="check-circle"><Check /></span><h3>{isCompany ? "Solver Academy Sdn. Bhd." : "Sim Lip Geap"} register</h3><p>{entityReceipts.length} records with categories and source-file references.</p></article><article className="panel"><span className="check-circle"><Check /></span><h3>{isPersonal ? "Relief evidence" : "Business purpose"}</h3><p>{entityReceipts.filter((r) => r.businessPurpose).length} records documented; {entityReceipts.filter((r) => r.taxUse === "Review").length} needs review.</p></article><article className="panel"><span className="check-circle"><Check /></span><h3>{isPersonal ? "Personal-only account" : "Bank reconciliation"}</h3><p>{isPersonal ? "No business or company expenses included." : `${bankRows.filter((row) => row.status === "Matched").length} matched transactions and ${bankRows.filter((row) => row.status !== "Matched").length} missing receipts.`}</p></article><article className="panel"><span className="check-circle"><Check /></span><h3>{isPersonal ? "Form BE register" : isCompany ? "Form C and MyInvois register" : "Form B register"}</h3><p>{isPersonal ? `${entityReceipts.filter((r) => r.taxUse === "Relief").length} potential relief records.` : isCompany ? "Company accounting and validated UUID references are included." : "Sole proprietor records stay separate from the Sdn. Bhd."}</p></article></section>
+            <section className="feature-hero audit-hero"><div><span className="pill"><Archive /> LHDN record support</span><h2>One evidence pack. Seven-year-ready.</h2><p>Bundle your receipt register, business purpose, bank matching and MyInvois references for your accountant or future review.</p><button className="dark-button" onClick={downloadAuditPack}><Download /> Download Audit Pack</button></div><div className="archive-visual"><Archive /><strong>YA 2026</strong><span>Indicative target if filed in 2027</span><b>31 Dec 2034</b></div></section>
+            <section className="audit-grid"><article className="panel"><span className="check-circle"><Check /></span><h3>{isCompany ? "Solver Academy Sdn. Bhd." : "Sim Lip Geap"} register</h3><p>{entityReceipts.length} records with categories and source-file references.</p></article><article className="panel"><span className="check-circle"><Check /></span><h3>{isPersonal ? "Relief evidence" : "Business purpose"}</h3><p>{entityReceipts.filter((r) => r.businessPurpose).length} records documented; {entityReceipts.filter((r) => r.taxUse === "Review").length} needs review.</p></article><article className="panel"><span className="check-circle"><Check /></span><h3>{isPersonal ? "Personal-only account" : "Bank reconciliation"}</h3><p>{isPersonal ? "No business or company expenses included." : `${bankRows.filter((row) => row.status === "Matched").length} matched transactions and ${bankRows.filter((row) => row.status !== "Matched").length} missing receipts.`}</p></article><article className="panel"><span className="check-circle"><Check /></span><h3>{isPersonal ? "Form BE register" : isCompany ? "Form C and MyInvois register" : "Form B register"}</h3><p>{isPersonal ? `${entityReceipts.filter((r) => r.taxUse === "Relief").length} potential relief records.` : isCompany ? "Company accounting and recorded MyInvois UUID references are included; API validation evidence remains separate." : "Sole proprietor records stay separate from the Sdn. Bhd."}</p></article></section>
             <section className="panel retention"><ShieldCheck /><div><h3>Retention reminder is active</h3><p>Keep the YA 2026 records through the applicable seven-year period. Browser-only data is not a guaranteed backup, so export a copy for your own secure storage and tax agent.</p></div><span className="safe-chip">7 years</span></section>
           </div>
         )}
@@ -822,15 +973,38 @@ export default function Home() {
   );
 }
 
-function ReceiptTable({ entity, receipts, query, setQuery, onViewAll, full = false }: { entity: Entity; receipts: Receipt[]; query: string; setQuery: (v: string) => void; onViewAll: () => void; full?: boolean }) {
+function ReceiptTable({ entity, receipts, query, setQuery, onViewAll, onEdit, onExport, full = false }: { entity: Entity; receipts: Receipt[]; query: string; setQuery: (v: string) => void; onViewAll: () => void; onEdit: (receipt: Receipt) => void; onExport: () => void; full?: boolean }) {
   const accountName = entity === "company" ? "Solver Academy" : "Sim Lip Geap";
   const accountKind = entity === "personal" ? "personal" : entity === "company" ? "company" : "sole proprietor";
-  return <section className="panel receipt-list"><div className="panel-head"><div><h3>{full ? `${accountName} receipts` : "Recent receipts"}</h3><p>{full ? `Only ${accountKind} records are shown` : "Automatically extracted and categorised"}</p></div><div className="table-actions">{full && <label className="search"><Search /><input value={query} onChange={(e) => setQuery(e.target.value)} placeholder="Search receipts" /></label>}<button className="text-button" onClick={onViewAll}>{full ? "Add receipt" : "View all"} <ArrowUpRight /></button></div></div><div className="table-wrap"><table><thead><tr><th>Merchant</th><th>Date</th><th>Category</th><th>Tax use</th><th>{entity === "personal" ? "Account" : "Business use"}</th><th>{entity === "personal" ? "Amount" : "Claimable"}</th><th></th></tr></thead><tbody>{receipts.map((receipt) => { const Icon = categoryMeta[receipt.category].icon; return <tr key={receipt.id}><td><div className="merchant"><span className={`cat-icon ${categoryMeta[receipt.category].tone}`}><Icon /></span><div><b>{receipt.merchant}</b><small>{receipt.myInvoisUuid ? `MyInvois ${receipt.myInvoisUuid}` : `${receipt.confidence}% category match`}</small></div></div></td><td>{receipt.date}</td><td><span className="category-label">{receipt.category}</span></td><td><span className={`tax-use ${receipt.taxUse.toLowerCase()}`}>{receipt.taxUse === "Review" ? <AlertCircle /> : receipt.taxUse === "Relief" ? <FileCheck2 /> : null}{receipt.taxUse}</span></td><td>{entity === "personal" ? "Personal" : receipt.taxUse === "Business" ? `${receipt.businessUse}%` : "—"}</td><td><strong>{currency(receipt.taxUse === "Business" ? receipt.amount * receipt.businessUse / 100 : receipt.amount)}</strong>{entity !== "personal" && <small className="gross-amount">gross {currency(receipt.amount)}</small>}</td><td><button className="more" aria-label={`Actions for ${receipt.merchant}`}><MoreHorizontal /></button></td></tr>; })}</tbody></table></div></section>;
+  return <section className="panel receipt-list">
+    <div className="panel-head"><div><h3>{full ? `${accountName} receipts` : "Recent receipts"}</h3><p>{full ? `Only ${accountKind} records are shown` : "Automatically extracted and categorised"}</p></div><div className="table-actions">{full && <><label className="search"><Search /><input value={query} onChange={(e) => setQuery(e.target.value)} placeholder="Search receipts" /></label><button className="text-button" onClick={onExport}><Download /> Export CSV</button></>}<button className="text-button" onClick={onViewAll}>{full ? "Add receipt" : "View all"} <ArrowUpRight /></button></div></div>
+    <div className="table-wrap"><table><thead><tr><th>Merchant</th><th>Date</th><th>Category</th><th>Tax use</th><th>{entity === "personal" ? "Account" : "Business use"}</th><th>{entity === "personal" ? "Amount" : "Claimable"}</th><th></th></tr></thead><tbody>{receipts.map((receipt) => {
+      const Icon = categoryMeta[receipt.category].icon;
+      const shownAmount = entity === "personal" ? receipt.amount : receipt.taxUse === "Business" ? receipt.amount * receipt.businessUse / 100 : 0;
+      return <tr key={receipt.id}><td><div className="merchant"><span className={`cat-icon ${categoryMeta[receipt.category].tone}`}><Icon /></span><div><b>{receipt.merchant}</b><small>{receipt.myInvoisUuid ? `MyInvois ${receipt.myInvoisUuid}` : `${receipt.confidence}% category match`}</small></div></div></td><td>{receipt.date}</td><td><span className="category-label">{receipt.category}</span></td><td><span className={`tax-use ${receipt.taxUse.toLowerCase()}`}>{receipt.taxUse === "Review" ? <AlertCircle /> : receipt.taxUse === "Relief" ? <FileCheck2 /> : null}{receipt.taxUse}</span></td><td>{entity === "personal" ? "Personal" : receipt.taxUse === "Business" ? `${receipt.businessUse}%` : "—"}</td><td><strong>{currency(shownAmount)}</strong>{entity !== "personal" && <small className="gross-amount">gross {currency(receipt.amount)}</small>}</td><td><button className="more" aria-label={`Edit ${receipt.merchant}`} onClick={() => onEdit(receipt)}><Pencil /></button></td></tr>;
+    })}</tbody></table></div>
+  </section>;
 }
 
 function UploadModal({ draft, setDraft, processing, progress, fileRef, onFile, onClose, onSave }: { draft: Receipt | null; setDraft: (r: Receipt) => void; processing: boolean; progress: number; fileRef: React.RefObject<HTMLInputElement | null>; onFile: (f: File) => void; onClose: () => void; onSave: (e: FormEvent) => void }) {
   const personalCategories: Category[] = ["Medical", "Lifestyle", "Education", "Insurance", "EPF & SOCSO", "Zakat", "Food & Beverage", "Entertainment", "Mobile", "Others"];
   const businessCategories: Category[] = ["Food & Beverage", "Stationery", "Petrol", "Toll Fee", "Mobile", "Entertainment", "Office Rent", "Software & Subscriptions", "Professional Fees", "Advertising & Marketing", "Utilities", "Others"];
   const draftAccount = draft?.entity === "personal" ? "Sim Lip Geap · Personal" : draft?.entity === "company" ? "Solver Academy · Sdn. Bhd." : "Sim Lip Geap · Sole proprietor";
-  return <div className="modal-backdrop" role="dialog" aria-modal="true" aria-labelledby="upload-title"><div className="modal"><div className="modal-head"><div><span className="pill"><Sparkles /> {draftAccount}</span><h2 id="upload-title">Upload a receipt</h2><p>This receipt will stay inside the selected account.</p></div><button className="icon-btn" onClick={onClose} aria-label="Close"><X /></button></div>{!draft ? <button className={`dropzone ${processing ? "processing" : ""}`} disabled={processing} onClick={() => fileRef.current?.click()} onDragOver={(e) => e.preventDefault()} onDrop={(e) => { e.preventDefault(); const file = e.dataTransfer.files[0]; if (file) onFile(file); }}><input ref={fileRef} type="file" accept="image/png,image/jpeg,image/webp" hidden onChange={(e) => e.target.files?.[0] && onFile(e.target.files[0])} />{processing ? <><LoaderCircle className="spinner" /><strong>Reading your receipt…</strong><span>Extracting merchant, amount and category</span><div className="progress"><i style={{ width: `${progress}%` }}></i></div><small>{progress}% complete</small></> : <><span className="upload-icon"><Paperclip /></span><strong>Drop your receipt here</strong><span>or click to choose a photo</span><small>JPG, PNG or WEBP · up to 10 MB</small></>}</button> : <form onSubmit={onSave} className="receipt-form"><div className="detected"><span><Check /></span><div><strong>{draft.entity === "personal" ? "Personal account detected" : draft.entity === "company" ? "Sdn. Bhd. account detected" : "Sole proprietor account detected"}</strong><small>{draft.confidence}% category confidence · Please confirm</small></div></div><label>Merchant<input value={draft.merchant} onChange={(e) => setDraft({ ...draft, merchant: e.target.value })} required /></label><div className="form-row"><label>Amount (RM)<input type="number" step="0.01" min="0" value={draft.amount} onChange={(e) => setDraft({ ...draft, amount: Number(e.target.value) })} required /></label><label>Category<select value={draft.category} onChange={(e) => setDraft({ ...draft, category: e.target.value as Category })}>{(draft.entity === "personal" ? personalCategories : businessCategories).map((category) => <option key={category}>{category}</option>)}</select></label></div><label>Tax treatment<div className={`segmented ${draft.entity === "personal" ? "" : "four"}`}>{(draft.entity === "personal" ? ["Relief", "Personal", "Review"] as const : ["Business", "Personal", "Review"] as const).map((value) => <button type="button" className={draft.taxUse === value ? "active" : ""} onClick={() => setDraft({ ...draft, taxUse: value, businessUse: value === "Business" ? Math.max(draft.businessUse, 1) : 0 })} key={value}>{value}</button>)}</div></label>{draft.taxUse === "Business" && <><div className="form-row"><label>Business use<input type="range" min="0" max="100" value={draft.businessUse} onChange={(e) => setDraft({ ...draft, businessUse: Number(e.target.value) })} /><span className="range-value">{draft.businessUse}% · claimable {currency(draft.amount * draft.businessUse / 100)}</span></label><label>MyInvois UUID (optional)<input value={draft.myInvoisUuid || ""} onChange={(e) => setDraft({ ...draft, myInvoisUuid: e.target.value })} placeholder="e.g. EI-XXXX-XXXX" /></label></div><label>Business purpose<input value={draft.businessPurpose || ""} onChange={(e) => setDraft({ ...draft, businessPurpose: e.target.value })} placeholder="e.g. Client visit in Petaling Jaya" /></label></>}<div className="modal-actions"><button type="button" className="secondary" onClick={onClose}>Cancel</button><button className="primary" type="submit"><Check /> Save to {draftAccount}</button></div></form>}</div></div>;
+  return <div className="modal-backdrop" role="dialog" aria-modal="true" aria-labelledby="upload-title"><div className="modal">
+    <div className="modal-head"><div><span className="pill"><Sparkles /> {draftAccount}</span><h2 id="upload-title">{draft ? "Review receipt" : "Upload a receipt"}</h2><p>This receipt will stay inside the selected account.</p></div><button className="icon-btn" onClick={onClose} aria-label="Close"><X /></button></div>
+    {!draft ? <button className={`dropzone ${processing ? "processing" : ""}`} disabled={processing} onClick={() => fileRef.current?.click()} onDragOver={(e) => e.preventDefault()} onDrop={(e) => { e.preventDefault(); const file = e.dataTransfer.files[0]; if (file) onFile(file); }}>
+      <input ref={fileRef} type="file" accept="image/png,image/jpeg,image/webp" hidden onChange={(e) => e.target.files?.[0] && onFile(e.target.files[0])} />
+      {processing ? <><LoaderCircle className="spinner" /><strong>Reading your receipt…</strong><span>Extracting merchant, amount and category</span><div className="progress"><i style={{ width: `${progress}%` }}></i></div><small>{progress}% complete</small></> : <><span className="upload-icon"><Paperclip /></span><strong>Drop your receipt here</strong><span>or click to choose a photo</span><small>JPG, PNG or WEBP · up to 10 MB</small></>}
+    </button> : <form onSubmit={onSave} className="receipt-form">
+      <div className="detected"><span><Check /></span><div><strong>{draft.entity === "personal" ? "Personal account detected" : draft.entity === "company" ? "Sdn. Bhd. account detected" : "Sole proprietor account detected"}</strong><small>{draft.confidence}% category confidence · Please confirm</small></div></div>
+      <div className="form-row"><label>Merchant<input maxLength={160} value={draft.merchant} onChange={(e) => setDraft({ ...draft, merchant: e.target.value })} required /></label><label>Receipt date<input type="date" value={isoDate(draft.date)} onChange={(e) => setDraft({ ...draft, date: displayDate(e.target.value) })} required /></label></div>
+      <div className="form-row"><label>Amount (RM)<input type="number" step="0.01" min="0.01" max="999999999.99" value={draft.amount} onChange={(e) => setDraft({ ...draft, amount: Number(e.target.value) })} required /></label><label>Category<select value={draft.category} onChange={(e) => setDraft({ ...draft, category: e.target.value as Category })}>{(draft.entity === "personal" ? personalCategories : businessCategories).map((category) => <option key={category}>{category}</option>)}</select></label></div>
+      {draft.entity !== "personal" && <label>Paid from / liability<select value={draft.paymentAccountCode || "1010"} onChange={(e) => setDraft({ ...draft, paymentAccountCode: e.target.value })}>
+        <option value="1010">Business bank account</option><option value="1000">Cash on hand</option><option value="2000">Trade payables (not paid yet)</option><option value={draft.entity === "company" ? "2600" : "3000"}>{draft.entity === "company" ? "Paid by director" : "Paid personally by owner"}</option>
+      </select></label>}
+      <label>Tax treatment<div className={`segmented ${draft.entity === "personal" ? "" : "four"}`}>{(draft.entity === "personal" ? ["Relief", "Personal", "Review"] as const : ["Business", "Personal", "Review"] as const).map((value) => <button type="button" className={draft.taxUse === value ? "active" : ""} onClick={() => setDraft({ ...draft, taxUse: value, businessUse: value === "Business" ? Math.max(draft.businessUse, 1) : draft.businessUse })} key={value}>{value}</button>)}</div></label>
+      {draft.taxUse === "Business" && <><div className="form-row"><label>Business use<input type="range" min="1" max="100" value={Math.max(1, draft.businessUse)} onChange={(e) => setDraft({ ...draft, businessUse: Number(e.target.value) })} /><span className="range-value">{Math.max(1, draft.businessUse)}% · claimable {currency(draft.amount * Math.max(1, draft.businessUse) / 100)}</span></label><label>MyInvois UUID (optional)<input maxLength={160} value={draft.myInvoisUuid || ""} onChange={(e) => setDraft({ ...draft, myInvoisUuid: e.target.value })} placeholder="MyInvois document UUID" /></label></div><label>Business purpose<input maxLength={500} value={draft.businessPurpose || ""} onChange={(e) => setDraft({ ...draft, businessPurpose: e.target.value })} placeholder="Required before posting, e.g. client visit" /></label></>}
+      <div className="modal-actions"><button type="button" className="secondary" onClick={onClose}>Cancel</button><button className="primary" type="submit"><Check /> Save to {draftAccount}</button></div>
+    </form>}
+  </div></div>;
 }

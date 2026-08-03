@@ -40,6 +40,7 @@ import {
   journalTotals,
   profitAndLoss,
   reverseJournal,
+  sanitizeJournalEntries,
   seedJournalEntries,
   seedSoleProprietorJournalEntries,
   soleProprietorAccountByCode,
@@ -66,7 +67,13 @@ function saveDownload(name: string, content: string, type = "text/csv") {
   link.href = URL.createObjectURL(blob);
   link.download = name;
   link.click();
-  URL.revokeObjectURL(link.href);
+  setTimeout(() => URL.revokeObjectURL(link.href), 0);
+}
+
+function csvCell(value: string | number) {
+  let text = String(value);
+  if (/^[=+\-@\t\r]/.test(text)) text = `'${text}`;
+  return `"${text.replaceAll('"', '""')}"`;
 }
 
 export default function CompanyAccounting({ view, receipts, onToast, mode = "company" }: Props) {
@@ -90,8 +97,9 @@ export default function CompanyAccounting({ view, receipts, onToast, mode = "com
       const lock = window.localStorage.getItem(lockKey);
       if (saved) {
         const parsed = JSON.parse(saved);
+        const hydrated = sanitizeJournalEntries(parsed, accounts);
         // eslint-disable-next-line react-hooks/set-state-in-effect -- hydrate the optional browser ledger after mount
-        if (Array.isArray(parsed)) setEntries(parsed);
+        if (Array.isArray(parsed)) setEntries(hydrated);
       }
       setPeriodLocked(lock === "true");
     } catch {
@@ -99,7 +107,7 @@ export default function CompanyAccounting({ view, receipts, onToast, mode = "com
     } finally {
       setReady(true);
     }
-  }, [lockKey, storageKey]);
+  }, [accounts, lockKey, storageKey]);
 
   useEffect(() => {
     if (!ready) return;
@@ -107,13 +115,22 @@ export default function CompanyAccounting({ view, receipts, onToast, mode = "com
     setEntries((current) => {
       const linked = new Set(current.map((entry) => entry.sourceReceiptId).filter(Boolean));
       const additions = receipts.filter((receipt) => !linked.has(receipt.id)).map((receipt) => createReceiptJournal(receipt, isSoleProprietor ? { privateAccountCode: "3200" } : undefined));
-      return additions.length ? [...additions, ...current] : current;
+      const refreshed = current.map((entry) => {
+        if (entry.status !== "draft" || !entry.sourceReceiptId) return entry;
+        const receipt = receipts.find((item) => item.id === entry.sourceReceiptId);
+        return receipt ? { ...createReceiptJournal(receipt, isSoleProprietor ? { privateAccountCode: "3200" } : undefined), createdAt: entry.createdAt } : entry;
+      });
+      return additions.length ? [...additions, ...refreshed] : refreshed;
     });
   }, [isSoleProprietor, ready, receipts]);
 
   useEffect(() => {
     if (!ready) return;
-    window.localStorage.setItem(storageKey, JSON.stringify(entries));
+    try {
+      window.localStorage.setItem(storageKey, JSON.stringify(entries));
+    } catch {
+      // Keep the in-memory ledger available when browser storage is unavailable.
+    }
   }, [entries, ready, storageKey]);
 
   const reports = useMemo(() => ({
@@ -131,6 +148,12 @@ export default function CompanyAccounting({ view, receipts, onToast, mode = "com
     if (periodLocked) return onToast("The 2026 accounting period is locked. Unlock it before posting.");
     const entry = entries.find((item) => item.id === id);
     if (!entry || !validateJournal(entry, accounts)) return onToast("Journal cannot be posted: debit and credit must balance.");
+    if (entry.date < "2026-01-01" || entry.date > "2026-12-31") return onToast("Journal cannot be posted outside the 2026 accounting period.");
+    if (entries.some((item) => item.id !== entry.id && item.status === "posted" && item.reference.toLowerCase() === entry.reference.toLowerCase())) return onToast("Journal cannot be posted: this reference is already used by a posted entry.");
+    const receipt = entry.sourceReceiptId ? receipts.find((item) => item.id === entry.sourceReceiptId) : undefined;
+    if (receipt?.taxUse === "Review") return onToast("Receipt cannot be posted until its tax treatment is changed from Review.");
+    if (receipt?.taxUse === "Business" && !receipt.businessPurpose?.trim()) return onToast("Receipt cannot be posted until its business purpose is documented.");
+    if (receipt?.taxUse === "Business" && receipt.businessUse <= 0) return onToast("Receipt cannot be posted with 0% business use.");
     setEntries((current) => current.map((item) => item.id === id ? { ...item, status: "posted" } : item));
     onToast(`Journal posted to the ${isSoleProprietor ? "Form B business" : "Solver Academy"} general ledger.`);
   }
@@ -151,12 +174,16 @@ export default function CompanyAccounting({ view, receipts, onToast, mode = "com
   function toggleLock() {
     const next = !periodLocked;
     setPeriodLocked(next);
-    window.localStorage.setItem(lockKey, String(next));
+    try {
+      window.localStorage.setItem(lockKey, String(next));
+    } catch {
+      return onToast("The browser could not save the period lock setting.");
+    }
     onToast(next ? "Accounting period locked. Posted records are protected." : "Accounting period unlocked for authorised adjustments.");
   }
 
   function exportTrialBalance() {
-    const rows = reports.tb.map((row) => [row.account.code, `"${row.account.name}"`, row.debit.toFixed(2), row.credit.toFixed(2)].join(","));
+    const rows = reports.tb.map((row) => [csvCell(row.account.code), csvCell(row.account.name), row.debit.toFixed(2), row.credit.toFixed(2)].join(","));
     saveDownload(`AMS-${exportName}-Trial-Balance-YA2026.csv`, ["Account code,Account,Debit MYR,Credit MYR", ...rows].join("\n"));
     onToast("Trial Balance exported as CSV.");
   }
@@ -180,14 +207,14 @@ export default function CompanyAccounting({ view, receipts, onToast, mode = "com
     </>}
 
     {view === "pl" && <ProfitAndLossView report={reports.pnl} onExport={() => {
-      const rows = [...reports.pnl.income, ...reports.pnl.expenses].map((row) => `${row.account.code},"${row.account.name}",${row.amount.toFixed(2)}`);
+      const rows = [...reports.pnl.income, ...reports.pnl.expenses].map((row) => `${csvCell(row.account.code)},${csvCell(row.account.name)},${row.amount.toFixed(2)}`);
       saveDownload(`AMS-${exportName}-Profit-and-Loss-YA2026.csv`, ["Account code,Account,Amount MYR", ...rows].join("\n"));
       onToast("Profit & Loss exported as CSV.");
     }} entityName={entityName} isSoleProprietor={isSoleProprietor} />}
 
     {view === "balance" && <BalanceSheetView report={reports.balance} isSoleProprietor={isSoleProprietor} />}
     {view === "cashflow" && <CashFlowView report={reports.cashFlow} isSoleProprietor={isSoleProprietor} />}
-    {view === "tax" && !isSoleProprietor && <CompanyTaxView report={reports.tax} />}
+    {view === "tax" && (isSoleProprietor ? <SoleProprietorTaxView report={reports.tax} /> : <CompanyTaxView report={reports.tax} />)}
 
     {journalOpen && <JournalModal accounts={accounts} entityName={entityName} onClose={() => setJournalOpen(false)} onSave={addJournal} />}
   </div>;
@@ -220,7 +247,11 @@ function CashFlowView({ report, isSoleProprietor }: { report: ReturnType<typeof 
 }
 
 function CompanyTaxView({ report }: { report: ReturnType<typeof taxComputation> }) {
-  return <><section className="statement-hero tax-computation-hero"><div><span className="pill"><FileText /> Borang C · YA 2026 preparation</span><h2>Company tax computation</h2><p>Book-to-tax reconciliation for Solver Academy Sdn. Bhd. Final rates, incentives and claims require taxpayer or licensed tax-agent confirmation.</p></div><a className="dark-button" href="https://mytax.hasil.gov.my" target="_blank" rel="noreferrer">Open MyTax <ArrowUpRight /></a></section><div className="financial-grid tax-grid"><section className="panel financial-statement"><div className="statement-title"><div><h3>Income tax working paper</h3><p>Linked to the MPERS General Ledger</p></div><span>YA 2026</span></div><div className="tax-line"><span>Profit before tax</span><strong>{currency(report.profitBeforeTax)}</strong></div>{report.addbacks.map((row) => <div className="tax-line" key={row.account.code}><span>Add back: {row.account.name}<small>{row.account.taxTreatment === "review" ? "Requires deductibility review" : "Not deductible in tax computation"}</small></span><strong>{currency(row.amount)}</strong></div>)}<div className="tax-line subtotal"><span>Adjusted business income</span><strong>{currency(report.adjustedIncome)}</strong></div><div className="tax-line"><span>Less: provisional capital allowance<small>Illustrative 20% only; confirm asset class and Schedule 3 rate</small></span><strong>({currency(report.provisionalCapitalAllowance)})</strong></div><div className="grand-total final"><span>Provisional statutory income</span><strong>{currency(report.statutoryIncome)}</strong></div><section className="compliance-warning"><AlertCircle /><p>No corporate tax rate is auto-applied until SME status, paid-up capital, related-company conditions, incentives and official YA rules are confirmed.</p></section></section><aside className="panel compliance-side"><h3>Form C &amp; CP204</h3><div><BadgeCheck /><p><b>Form C</b><small>Due within 7 months after financial year end</small></p></div><div><CircleDollarSign /><p><b>CP204 / CP204A</b><small>Track estimate, revisions and monthly instalments</small></p></div><div><LockKeyhole /><p><b>Seven-year records</b><small>Keep ledgers, supporting documents and working papers</small></p></div><a href="https://www.hasil.gov.my/en/company/corporate-tax/" target="_blank" rel="noreferrer">HASiL corporate tax guidance <ArrowUpRight /></a></aside></div><section className="mitrs-section"><div className="panel-head"><div><h3>MITRS submission pack</h3><p>Section 82B specified documents · company category</p></div><span className="safe-chip">Within 30 days after Form C due date</span></div><div className="mitrs-grid"><article><FileCheck2 /><div><b>Financial statements</b><small>Audited or qualifying unaudited PDF</small></div><span>Ready</span></article><article><FileText /><div><b>Income tax computation</b><small>Detailed P&amp;L and tax adjustments</small></div><span>Draft</span></article><article><TableProperties /><div><b>Capital allowance schedule</b><small>Schedule 3 asset movements</small></div><span>Review</span></article><article><ShieldCheck /><div><b>Incentive computation</b><small>Include only when an incentive is claimed</small></div><span>Not applicable</span></article></div><a className="official-source" href="https://www.hasil.gov.my/en/forms/filing-programme-for-documents-specified-under-section-82b-ita-1967-through-mitrs/assessment-year-2026/" target="_blank" rel="noreferrer"><ShieldCheck /> Official HASiL MITRS YA 2026 source <ArrowUpRight /></a></section></>;
+  return <><section className="statement-hero tax-computation-hero"><div><span className="pill"><FileText /> Borang C · YA 2026 preparation</span><h2>Company tax computation</h2><p>Book-to-tax reconciliation for Solver Academy Sdn. Bhd. Final rates, incentives and claims require taxpayer or licensed tax-agent confirmation.</p></div><a className="dark-button" href="https://mytax.hasil.gov.my" target="_blank" rel="noreferrer">Open MyTax <ArrowUpRight /></a></section><div className="financial-grid tax-grid"><section className="panel financial-statement"><div className="statement-title"><div><h3>Income tax working paper</h3><p>Linked to the MPERS General Ledger</p></div><span>YA 2026</span></div><div className="tax-line"><span>Profit before tax</span><strong>{currency(report.profitBeforeTax)}</strong></div>{report.addbacks.map((row) => <div className="tax-line" key={row.account.code}><span>Add back: {row.account.name}<small>Not deductible in this provisional tax computation</small></span><strong>{currency(row.amount)}</strong></div>)}{report.reviewItems.map((row) => <div className="tax-line" key={`review-${row.account.code}`}><span>Review only: {row.account.name}<small>Not automatically added back; confirm evidence and deductible portion</small></span><strong>{currency(row.amount)}</strong></div>)}<div className="tax-line subtotal"><span>Adjusted business income</span><strong>{currency(report.adjustedIncome)}</strong></div><div className="tax-line"><span>Less: provisional capital allowance<small>Illustrative 20% only; confirm asset class and Schedule 3 rate</small></span><strong>({currency(report.provisionalCapitalAllowance)})</strong></div><div className="grand-total final"><span>Provisional statutory income</span><strong>{currency(report.statutoryIncome)}</strong></div><section className="compliance-warning"><AlertCircle /><p>No corporate tax rate is auto-applied until SME status, paid-up capital, related-company conditions, incentives and official YA rules are confirmed.</p></section></section><aside className="panel compliance-side"><h3>Form C &amp; CP204</h3><div><BadgeCheck /><p><b>Form C</b><small>Due within 7 months after financial year end</small></p></div><div><CircleDollarSign /><p><b>CP204 / CP204A</b><small>Track estimate, revisions and monthly instalments</small></p></div><div><LockKeyhole /><p><b>Seven-year records</b><small>Keep ledgers, supporting documents and working papers</small></p></div><a href="https://www.hasil.gov.my/en/company/corporate-tax/" target="_blank" rel="noreferrer">HASiL corporate tax guidance <ArrowUpRight /></a></aside></div><section className="mitrs-section"><div className="panel-head"><div><h3>MITRS submission pack</h3><p>Section 82B specified documents · company category</p></div><span className="safe-chip">Within 30 days after Form C due date</span></div><div className="mitrs-grid"><article><FileCheck2 /><div><b>Financial statements</b><small>Audited or qualifying unaudited PDF</small></div><span>Ready</span></article><article><FileText /><div><b>Income tax computation</b><small>Detailed P&amp;L and tax adjustments</small></div><span>Draft</span></article><article><TableProperties /><div><b>Capital allowance schedule</b><small>Schedule 3 asset movements</small></div><span>Review</span></article><article><ShieldCheck /><div><b>Incentive computation</b><small>Include only when an incentive is claimed</small></div><span>Not applicable</span></article></div><a className="official-source" href="https://www.hasil.gov.my/en/forms/filing-programme-for-documents-specified-under-section-82b-ita-1967-through-mitrs/assessment-year-2026/" target="_blank" rel="noreferrer"><ShieldCheck /> Official HASiL MITRS YA 2026 source <ArrowUpRight /></a></section></>;
+}
+
+function SoleProprietorTaxView({ report }: { report: ReturnType<typeof taxComputation> }) {
+  return <><section className="statement-hero tax-computation-hero"><div><span className="pill"><FileText /> Borang B · YA 2026 preparation</span><h2>Sole proprietor tax computation</h2><p>Generated only from posted Sim Lip Geap business journals. Personal reliefs, other income, CP500 and final deductibility remain separate return adjustments.</p></div><a className="dark-button" href="https://mytax.hasil.gov.my" target="_blank" rel="noreferrer">Open MyTax <ArrowUpRight /></a></section><div className="financial-grid tax-grid"><section className="panel financial-statement"><div className="statement-title"><div><h3>Form B business working paper</h3><p>Linked to the sole proprietor Profit &amp; Loss</p></div><span>YA 2026</span></div><div className="tax-line"><span>Net business profit before tax adjustments</span><strong>{currency(report.profitBeforeTax)}</strong></div>{report.addbacks.map((row) => <div className="tax-line" key={row.account.code}><span>Add back: {row.account.name}<small>Not deductible in this provisional working paper</small></span><strong>{currency(row.amount)}</strong></div>)}{report.reviewItems.map((row) => <div className="tax-line" key={`review-${row.account.code}`}><span>Review only: {row.account.name}<small>Not automatically added back; confirm the wholly-and-exclusively business portion</small></span><strong>{currency(row.amount)}</strong></div>)}<div className="tax-line subtotal"><span>Adjusted business income</span><strong>{currency(report.adjustedIncome)}</strong></div><div className="tax-line"><span>Less: provisional capital allowance<small>Illustrative 20% only; replace with the actual Schedule 3 asset calculation</small></span><strong>({currency(report.provisionalCapitalAllowance)})</strong></div><div className="grand-total final"><span>Provisional statutory business income</span><strong>{currency(report.statutoryIncome)}</strong></div><section className="compliance-warning"><AlertCircle /><p>This is the business-income component of Borang B, not the final individual tax payable. Add other income, reliefs, rebates, losses and CP500/PCB before filing.</p></section></section><aside className="panel compliance-side"><h3>Posting safeguards</h3><div><BadgeCheck /><p><b>Posted journals only</b><small>Draft and Review receipts are excluded</small></p></div><div><ReceiptText /><p><b>Business purpose</b><small>Required before a business receipt can be posted</small></p></div><div><Scale /><p><b>Private-use split</b><small>Owner drawings stay outside deductible expenses</small></p></div><span className="safe-chip"><ShieldCheck /> Complete final items in the Form B checklist</span></aside></div></>;
 }
 
 function JournalModal({ accounts, entityName, onClose, onSave }: { accounts: Account[]; entityName: string; onClose: () => void; onSave: (entry: JournalEntry) => void }) {

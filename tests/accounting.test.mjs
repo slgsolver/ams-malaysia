@@ -7,6 +7,8 @@ import {
   createReceiptJournal,
   journalTotals,
   profitAndLoss,
+  roundMoney,
+  sanitizeJournalEntries,
   reverseJournal,
   seedJournalEntries,
   seedSoleProprietorJournalEntries,
@@ -94,4 +96,51 @@ test("Form C working paper separates accounting depreciation and capital allowan
   assert.equal(tax.fixedAssetCost, 6000);
   assert.equal(tax.provisionalCapitalAllowance, 1200);
   assert.equal(tax.statutoryIncome, 13600);
+});
+
+test("cash flow reconciles a genuine brought-forward cash balance", () => {
+  const entries = [
+    { id: "opening-cash", date: "2025-12-31", reference: "OB-001", description: "Cash brought forward", source: "opening", status: "posted", createdAt: "2026-01-01T00:00:00.000Z", lines: [{ accountCode: "1010", debit: 500, credit: 0 }, { accountCode: "3000", debit: 0, credit: 500 }] },
+    { id: "current-sale", date: "2026-01-10", reference: "INV-001", description: "Cash sale", source: "sales", status: "posted", createdAt: "2026-01-10T00:00:00.000Z", lines: [{ accountCode: "1010", debit: 100, credit: 0 }, { accountCode: "4000", debit: 0, credit: 100 }] },
+  ];
+  const cashFlow = cashFlowStatement(entries);
+  assert.equal(cashFlow.openingCash, 500);
+  assert.equal(cashFlow.operating, 100);
+  assert.equal(cashFlow.endingCash, 600);
+  assert.ok(cashFlow.reconciled);
+});
+
+test("journal validation rejects non-finite, negative and double-sided lines", () => {
+  assert.equal(validateJournal({ lines: [{ accountCode: "1010", debit: Infinity, credit: 0 }, { accountCode: "3000", debit: 0, credit: Infinity }] }), false);
+  assert.equal(validateJournal({ lines: [{ accountCode: "1010", debit: 100, credit: 1 }, { accountCode: "3000", debit: 0, credit: 99 }] }), false);
+  assert.equal(validateJournal({ lines: [{ accountCode: "1010", debit: 100, credit: 0 }, { accountCode: "3000", debit: -1, credit: 100 }] }), false);
+  assert.equal(roundMoney(-1.005), -1.01);
+});
+
+test("browser journal hydration discards corrupt and duplicate records", () => {
+  const valid = seedJournalEntries[0];
+  const hydrated = sanitizeJournalEntries([valid, valid, { ...valid, id: "bad", lines: [{ accountCode: "1010", debit: Infinity, credit: 0 }, { accountCode: "3000", debit: 0, credit: Infinity }] }]);
+  assert.deepEqual(hydrated, [valid]);
+});
+
+test("receipt journal uses the receipt date and rejects zero-value records", () => {
+  const journal = createReceiptJournal({ id: "dated", merchant: "POPULAR", date: "28 Jul 2026", amount: 10, category: "Stationery", businessUse: 100, taxUse: "Business", businessPurpose: "Office paper" });
+  assert.equal(journal.date, "2026-07-28");
+  assert.throws(() => createReceiptJournal({ id: "zero", merchant: "Invalid", amount: 0, category: "Others", businessUse: 0, taxUse: "Review" }), /positive finite/);
+});
+
+test("receipt journal respects bank, cash, payable or owner/director payment source", () => {
+  const payable = createReceiptJournal({ id: "unpaid", merchant: "Office Mart", date: "2026-08-02", amount: 45.5, category: "Stationery", businessUse: 100, taxUse: "Business", businessPurpose: "Office supplies", paymentAccountCode: "2000" });
+  assert.equal(payable.lines.find((line) => line.accountCode === "2000")?.credit, 45.5);
+  assert.equal(payable.lines.some((line) => line.accountCode === "1010"), false);
+  assert.ok(validateJournal(payable));
+});
+
+test("review accounts are flagged but are not automatically added back", () => {
+  const entry = createReceiptJournal({ id: "petrol", merchant: "PETRONAS", date: "2026-07-28", amount: 100, category: "Petrol", businessUse: 100, taxUse: "Business", businessPurpose: "Client visit" }, { privateAccountCode: "3200" });
+  const report = taxComputation([{ ...entry, status: "posted" }], soleProprietorChartOfAccounts);
+  assert.equal(report.profitBeforeTax, -100);
+  assert.equal(report.totalAddbacks, 0);
+  assert.equal(report.totalReview, 100);
+  assert.equal(report.adjustedIncome, -100);
 });
