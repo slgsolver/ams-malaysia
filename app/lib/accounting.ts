@@ -79,6 +79,18 @@ export const chartOfAccounts: Account[] = [
   { code: "6500", name: "Non-deductible Expenses", type: "expense", section: "Operating expenses", cashFlow: "operating", taxTreatment: "addback" },
 ];
 
+export const soleProprietorChartOfAccounts: Account[] = chartOfAccounts
+  .filter((account) => !["2200", "2600", "6400"].includes(account.code))
+  .map((account) => {
+    if (account.code === "1010") return { ...account, name: "Business Bank Account" };
+    if (account.code === "1350") return { ...account, name: "Owner Current Account" };
+    if (account.code === "3000") return { ...account, name: "Owner Capital" };
+    if (account.code === "3100") return { ...account, name: "Owner Accumulated Capital" };
+    if (account.code === "4000") return { ...account, name: "Business Service Revenue" };
+    return account;
+  })
+  .concat({ code: "3200", name: "Owner Drawings", type: "equity", section: "Owner's equity", cashFlow: "financing", taxTreatment: "balance-sheet" });
+
 const now = "2026-08-03T08:00:00.000Z";
 const line = (accountCode: string, debit = 0, credit = 0): JournalLine => ({ accountCode, debit, credit });
 const seed = (id: string, date: string, reference: string, description: string, source: JournalEntry["source"], lines: JournalLine[]): JournalEntry => ({ id, date, reference, description, source, status: "posted", lines, createdAt: now });
@@ -99,7 +111,16 @@ export const seedJournalEntries: JournalEntry[] = [
   seed("j-payable-payment", "2026-08-01", "PV-260801", "Part payment to professional services supplier", "bank", [line("2000", 700), line("1010", 0, 700)]),
 ];
 
+// Form B starts with an empty, balanced ledger so no example amount is mistaken
+// for Sim Lip Geap's real income or expense. Uploaded receipts create drafts.
+export const seedSoleProprietorJournalEntries: JournalEntry[] = [];
+
 export const accountByCode = Object.fromEntries(chartOfAccounts.map((account) => [account.code, account])) as Record<string, Account>;
+export const soleProprietorAccountByCode = Object.fromEntries(soleProprietorChartOfAccounts.map((account) => [account.code, account])) as Record<string, Account>;
+
+function accountMap(accounts: Account[]) {
+  return Object.fromEntries(accounts.map((account) => [account.code, account])) as Record<string, Account>;
+}
 
 export function roundMoney(value: number) {
   return Math.round((value + Number.EPSILON) * 100) / 100;
@@ -112,9 +133,10 @@ export function journalTotals(entry: Pick<JournalEntry, "lines">) {
   };
 }
 
-export function validateJournal(entry: Pick<JournalEntry, "lines">) {
+export function validateJournal(entry: Pick<JournalEntry, "lines">, accounts: Account[] = chartOfAccounts) {
   const totals = journalTotals(entry);
-  return entry.lines.length >= 2 && totals.debit > 0 && totals.debit === totals.credit && entry.lines.every((item) => Boolean(accountByCode[item.accountCode]) && !(item.debit > 0 && item.credit > 0) && (item.debit > 0 || item.credit > 0));
+  const accountsByCode = accounts === chartOfAccounts ? accountByCode : accountMap(accounts);
+  return entry.lines.length >= 2 && totals.debit > 0 && totals.debit === totals.credit && entry.lines.every((item) => Boolean(accountsByCode[item.accountCode]) && !(item.debit > 0 && item.credit > 0) && (item.debit > 0 || item.credit > 0));
 }
 
 export function postedEntries(entries: JournalEntry[]) {
@@ -130,27 +152,27 @@ export function normalAccountBalance(account: Account, entries: JournalEntry[]) 
   return roundMoney(account.type === "asset" || account.type === "expense" ? raw : -raw);
 }
 
-export function trialBalance(entries: JournalEntry[]) {
-  return chartOfAccounts.map((account) => {
+export function trialBalance(entries: JournalEntry[], accounts: Account[] = chartOfAccounts) {
+  return accounts.map((account) => {
     const raw = rawAccountBalance(account.code, entries);
     return { account, debit: raw > 0 ? raw : 0, credit: raw < 0 ? -raw : 0 };
   }).filter((row) => row.debit || row.credit);
 }
 
-export function profitAndLoss(entries: JournalEntry[]) {
-  const income = chartOfAccounts.filter((account) => account.type === "income").map((account) => ({ account, amount: normalAccountBalance(account, entries) })).filter((row) => row.amount !== 0);
-  const expenses = chartOfAccounts.filter((account) => account.type === "expense").map((account) => ({ account, amount: normalAccountBalance(account, entries) })).filter((row) => row.amount !== 0);
+export function profitAndLoss(entries: JournalEntry[], accounts: Account[] = chartOfAccounts) {
+  const income = accounts.filter((account) => account.type === "income").map((account) => ({ account, amount: normalAccountBalance(account, entries) })).filter((row) => row.amount !== 0);
+  const expenses = accounts.filter((account) => account.type === "expense").map((account) => ({ account, amount: normalAccountBalance(account, entries) })).filter((row) => row.amount !== 0);
   const revenue = roundMoney(income.reduce((sum, row) => sum + row.amount, 0));
   const totalExpenses = roundMoney(expenses.reduce((sum, row) => sum + row.amount, 0));
   const taxExpense = expenses.find((row) => row.account.code === "6400")?.amount || 0;
   return { income, expenses, revenue, totalExpenses, profitBeforeTax: roundMoney(revenue - totalExpenses + taxExpense), netProfit: roundMoney(revenue - totalExpenses) };
 }
 
-export function balanceSheet(entries: JournalEntry[]) {
-  const pnl = profitAndLoss(entries);
-  const assets = chartOfAccounts.filter((account) => account.type === "asset").map((account) => ({ account, amount: normalAccountBalance(account, entries) })).filter((row) => row.amount !== 0);
-  const liabilities = chartOfAccounts.filter((account) => account.type === "liability").map((account) => ({ account, amount: normalAccountBalance(account, entries) })).filter((row) => row.amount !== 0);
-  const equity = chartOfAccounts.filter((account) => account.type === "equity").map((account) => ({ account, amount: normalAccountBalance(account, entries) })).filter((row) => row.amount !== 0);
+export function balanceSheet(entries: JournalEntry[], accounts: Account[] = chartOfAccounts) {
+  const pnl = profitAndLoss(entries, accounts);
+  const assets = accounts.filter((account) => account.type === "asset").map((account) => ({ account, amount: normalAccountBalance(account, entries) })).filter((row) => row.amount !== 0);
+  const liabilities = accounts.filter((account) => account.type === "liability").map((account) => ({ account, amount: normalAccountBalance(account, entries) })).filter((row) => row.amount !== 0);
+  const equity = accounts.filter((account) => account.type === "equity").map((account) => ({ account, amount: normalAccountBalance(account, entries) })).filter((row) => row.amount !== 0);
   const totalAssets = roundMoney(assets.reduce((sum, row) => sum + row.amount, 0));
   const totalLiabilities = roundMoney(liabilities.reduce((sum, row) => sum + row.amount, 0));
   const baseEquity = roundMoney(equity.reduce((sum, row) => sum + row.amount, 0));
@@ -158,28 +180,33 @@ export function balanceSheet(entries: JournalEntry[]) {
   return { assets, liabilities, equity, currentYearEarnings: pnl.netProfit, totalAssets, totalLiabilities, totalEquity, balanced: Math.abs(totalAssets - totalLiabilities - totalEquity) < 0.01 };
 }
 
-export function cashFlowStatement(entries: JournalEntry[]) {
+export function cashFlowStatement(entries: JournalEntry[], accounts: Account[] = chartOfAccounts) {
+  const accountsByCode = accounts === chartOfAccounts ? accountByCode : accountMap(accounts);
   const posted = postedEntries(entries);
   let operating = 0;
   let investing = 0;
   let financing = 0;
   for (const entry of posted) {
-    const cashMovement = roundMoney(entry.lines.filter((item) => accountByCode[item.accountCode]?.cashFlow === "cash").reduce((sum, item) => sum + item.debit - item.credit, 0));
+    const cashMovement = roundMoney(entry.lines.filter((item) => accountsByCode[item.accountCode]?.cashFlow === "cash").reduce((sum, item) => sum + item.debit - item.credit, 0));
     if (!cashMovement) continue;
-    const counterpartClasses = entry.lines.filter((item) => accountByCode[item.accountCode]?.cashFlow !== "cash").map((item) => accountByCode[item.accountCode]?.cashFlow);
-    if (counterpartClasses.includes("investing")) investing += cashMovement;
-    else if (counterpartClasses.includes("financing")) financing += cashMovement;
-    else operating += cashMovement;
+    for (const item of entry.lines.filter((lineItem) => accountsByCode[lineItem.accountCode]?.cashFlow !== "cash")) {
+      const cashEffect = roundMoney(item.credit - item.debit);
+      const classification = accountsByCode[item.accountCode]?.cashFlow;
+      if (classification === "investing") investing += cashEffect;
+      else if (classification === "financing") financing += cashEffect;
+      else operating += cashEffect;
+    }
   }
   operating = roundMoney(operating);
   investing = roundMoney(investing);
   financing = roundMoney(financing);
-  const pnl = profitAndLoss(entries);
-  const depreciation = normalAccountBalance(accountByCode["6200"], entries);
-  const taxPaid = roundMoney(posted.filter((entry) => entry.lines.some((item) => item.accountCode === "2200" && item.debit > 0)).flatMap((entry) => entry.lines).filter((item) => accountByCode[item.accountCode]?.cashFlow === "cash").reduce((sum, item) => sum + item.credit - item.debit, 0));
+  const pnl = profitAndLoss(entries, accounts);
+  const depreciationAccount = accountsByCode["6200"];
+  const depreciation = depreciationAccount ? normalAccountBalance(depreciationAccount, entries) : 0;
+  const taxPaid = roundMoney(posted.filter((entry) => entry.lines.some((item) => item.accountCode === "2200" && item.debit > 0)).flatMap((entry) => entry.lines).filter((item) => accountsByCode[item.accountCode]?.cashFlow === "cash").reduce((sum, item) => sum + item.credit - item.debit, 0));
   const otherOperatingAdjustments = roundMoney(operating - pnl.profitBeforeTax - depreciation + taxPaid);
   const netChange = roundMoney(operating + investing + financing);
-  const endingCash = roundMoney(chartOfAccounts.filter((account) => account.cashFlow === "cash").reduce((sum, account) => sum + normalAccountBalance(account, entries), 0));
+  const endingCash = roundMoney(accounts.filter((account) => account.cashFlow === "cash").reduce((sum, account) => sum + normalAccountBalance(account, entries), 0));
   return { profitBeforeTax: pnl.profitBeforeTax, depreciation, otherOperatingAdjustments, taxPaid, operating, investing, financing, netChange, openingCash: roundMoney(endingCash - netChange), endingCash, reconciled: Math.abs(netChange - endingCash) < 0.01 };
 }
 
@@ -198,12 +225,12 @@ const receiptExpenseAccount: Record<string, string> = {
   Others: "6500",
 };
 
-export function createReceiptJournal(receipt: AccountingReceipt): JournalEntry {
+export function createReceiptJournal(receipt: AccountingReceipt, options: { privateAccountCode?: string } = {}): JournalEntry {
   const businessAmount = roundMoney(receipt.taxUse === "Business" ? receipt.amount * Math.max(0, Math.min(100, receipt.businessUse)) / 100 : 0);
   const privateAmount = roundMoney(receipt.amount - businessAmount);
   const lines: JournalLine[] = [];
   if (businessAmount) lines.push(line(receiptExpenseAccount[receipt.category] || "6500", businessAmount));
-  if (privateAmount) lines.push(line("1350", privateAmount));
+  if (privateAmount) lines.push(line(options.privateAccountCode || "1350", privateAmount));
   lines.push(line("1010", 0, receipt.amount));
   return {
     id: `receipt-${receipt.id}`,
@@ -218,11 +245,12 @@ export function createReceiptJournal(receipt: AccountingReceipt): JournalEntry {
   };
 }
 
-export function taxComputation(entries: JournalEntry[]) {
-  const pnl = profitAndLoss(entries);
-  const addbacks = chartOfAccounts.filter((account) => account.type === "expense" && (account.taxTreatment === "addback" || account.taxTreatment === "review") && account.code !== "6400").map((account) => ({ account, amount: Math.max(0, normalAccountBalance(account, entries)) })).filter((row) => row.amount > 0);
+export function taxComputation(entries: JournalEntry[], accounts: Account[] = chartOfAccounts) {
+  const accountsByCode = accounts === chartOfAccounts ? accountByCode : accountMap(accounts);
+  const pnl = profitAndLoss(entries, accounts);
+  const addbacks = accounts.filter((account) => account.type === "expense" && (account.taxTreatment === "addback" || account.taxTreatment === "review") && account.code !== "6400").map((account) => ({ account, amount: Math.max(0, normalAccountBalance(account, entries)) })).filter((row) => row.amount > 0);
   const totalAddbacks = roundMoney(addbacks.reduce((sum, row) => sum + row.amount, 0));
-  const fixedAssetCost = Math.max(0, normalAccountBalance(accountByCode["1500"], entries));
+  const fixedAssetCost = accountsByCode["1500"] ? Math.max(0, normalAccountBalance(accountsByCode["1500"], entries)) : 0;
   const provisionalCapitalAllowance = roundMoney(fixedAssetCost * 0.2);
   const adjustedIncome = roundMoney(pnl.profitBeforeTax + totalAddbacks);
   const statutoryIncome = roundMoney(Math.max(0, adjustedIncome - provisionalCapitalAllowance));

@@ -50,7 +50,7 @@ import {
 } from "lucide-react";
 import { CSSProperties, FormEvent, useEffect, useMemo, useRef, useState } from "react";
 import CompanyAccounting, { CompanyAccountingView } from "./components/company-accounting";
-import { balanceSheet, cashFlowStatement, profitAndLoss, seedJournalEntries, taxComputation } from "./lib/accounting";
+import { balanceSheet, cashFlowStatement, profitAndLoss, seedJournalEntries, seedSoleProprietorJournalEntries, soleProprietorChartOfAccounts, taxComputation } from "./lib/accounting";
 import type { AccountingReceipt, JournalEntry } from "./lib/accounting";
 import { translateToChinese } from "./i18n";
 
@@ -361,6 +361,7 @@ export default function Home() {
   const entityReceipts = useMemo(() => receipts.filter((item) => item.entity === entity), [receipts, entity]);
   const entityInvoices = useMemo(() => entityReceipts.filter((item) => item.myInvoisUuid), [entityReceipts]);
   const companyAccountingReceipts = useMemo<AccountingReceipt[]>(() => receipts.filter((item) => item.entity === "company").map((item) => ({ id: item.id, merchant: item.merchant, amount: item.amount, category: item.category, businessUse: item.businessUse, taxUse: item.taxUse, businessPurpose: item.businessPurpose, fileName: item.fileName })), [receipts]);
+  const soleProprietorAccountingReceipts = useMemo<AccountingReceipt[]>(() => receipts.filter((item) => item.entity === "business").map((item) => ({ id: item.id, merchant: item.merchant, amount: item.amount, category: item.category, businessUse: item.businessUse, taxUse: item.taxUse, businessPurpose: item.businessPurpose, fileName: item.fileName })), [receipts]);
   const totals = useMemo(() => {
     const total = entityReceipts.reduce((sum, item) => sum + item.amount, 0);
     const business = entityReceipts.filter((item) => item.taxUse === "Business").reduce((sum, item) => sum + item.amount * item.businessUse / 100, 0);
@@ -568,16 +569,17 @@ export default function Home() {
   }
 
   function downloadAuditPack() {
-    let companyJournals: JournalEntry[] = seedJournalEntries;
-    if (entity === "company") {
+    const accountingChart = isCompany ? undefined : soleProprietorChartOfAccounts;
+    let accountingJournals: JournalEntry[] = isCompany ? seedJournalEntries : seedSoleProprietorJournalEntries;
+    if (!isPersonal) {
       try {
-        const stored = window.localStorage.getItem("ams-company-journals-v1");
+        const stored = window.localStorage.getItem(isCompany ? "ams-company-journals-v1" : "ams-sole-proprietor-journals-v1");
         if (stored) {
           const parsed = JSON.parse(stored);
-          if (Array.isArray(parsed)) companyJournals = parsed;
+          if (Array.isArray(parsed)) accountingJournals = parsed;
         }
       } catch {
-        // Export the built-in company ledger when browser storage is unavailable.
+        // Export the selected built-in ledger when browser storage is unavailable.
       }
     }
     const pack = {
@@ -590,15 +592,15 @@ export default function Home() {
       summary: { grossExpenses: totals.total, potentialBusinessDeductions: totals.business, personalReliefReceipts: totals.relief },
       receipts: entityReceipts,
       bankReconciliation: bankRows,
-      companyAccounting: isCompany ? {
-        framework: "MPERS",
+      businessAccounting: !isPersonal ? {
+        framework: isCompany ? "MPERS" : "Sole proprietor business accounts",
         functionalCurrency: "MYR",
         accountingPeriod: "1 Jan 2026 to 31 Dec 2026",
-        journals: companyJournals,
-        profitAndLoss: profitAndLoss(companyJournals),
-        balanceSheet: balanceSheet(companyJournals),
-        cashFlowIndirectMethod: cashFlowStatement(companyJournals),
-        formCWorkingPaper: taxComputation(companyJournals),
+        journals: accountingJournals,
+        profitAndLoss: profitAndLoss(accountingJournals, accountingChart),
+        balanceSheet: balanceSheet(accountingJournals, accountingChart),
+        cashFlowIndirectMethod: cashFlowStatement(accountingJournals, accountingChart),
+        taxWorkingPaper: taxComputation(accountingJournals, accountingChart),
       } : undefined,
       disclaimer: "Prepared for review. Final tax treatment must be confirmed by the taxpayer or licensed tax agent.",
     };
@@ -646,10 +648,10 @@ export default function Home() {
           <button className={tab === "receipts" ? "active" : ""} onClick={() => setTab("receipts")}><ReceiptText /> Receipts <span className="nav-count">{entityReceipts.length}</span></button>
           {!isPersonal && <button className={tab === "bank" ? "active" : ""} onClick={() => setTab("bank")}><Landmark /> Bank matching {bankRows.some((row) => row.status !== "Matched") && <span className="nav-alert">{bankRows.filter((row) => row.status !== "Matched").length}</span>}</button>}
           {!isPersonal && <button className={tab === "myinvois" ? "active" : ""} onClick={() => setTab("myinvois")}><ScanLine /> MyInvois</button>}
-          {isCompany && <button className={tab === "ledger" ? "active" : ""} onClick={() => setTab("ledger")}><BookOpen /> General Ledger</button>}
-          {isCompany && <button className={tab === "pl" ? "active" : ""} onClick={() => setTab("pl")}><TrendingUp /> Profit &amp; Loss</button>}
-          {isCompany && <button className={tab === "balance" ? "active" : ""} onClick={() => setTab("balance")}><BarChart3 /> Balance Sheet</button>}
-          {isCompany && <button className={tab === "cashflow" ? "active" : ""} onClick={() => setTab("cashflow")}><CircleDollarSign /> Cash Flow</button>}
+          {!isPersonal && <button className={tab === "ledger" ? "active" : ""} onClick={() => setTab("ledger")}><BookOpen /> General Ledger</button>}
+          {!isPersonal && <button className={tab === "pl" ? "active" : ""} onClick={() => setTab("pl")}><TrendingUp /> Profit &amp; Loss</button>}
+          {!isPersonal && <button className={tab === "balance" ? "active" : ""} onClick={() => setTab("balance")}><BarChart3 /> Balance Sheet</button>}
+          {!isPersonal && <button className={tab === "cashflow" ? "active" : ""} onClick={() => setTab("cashflow")}><CircleDollarSign /> Cash Flow</button>}
           <button className={tab === "filing" ? "active" : ""} onClick={() => setTab("filing")}><ClipboardCheck /> Form checklist <span className="nav-progress">{filingPercent}%</span></button>
           <button className={tab === "tax" ? "active" : ""} onClick={() => setTab("tax")}><FileText /> {isPersonal ? "Tax Report" : isCompany ? "Form C & Tax" : "Form B Tax"}</button>
           <button className={tab === "audit" ? "active" : ""} onClick={() => setTab("audit")}><Archive /> Audit Pack</button>
@@ -671,7 +673,7 @@ export default function Home() {
         {tab === "overview" && (
           <div className="content">
             <section className="welcome-panel">
-              <div><span className="pill"><Sparkles /> {isPersonal ? "Personal tax relief" : isCompany ? "Sdn. Bhd. accounting" : "Sole proprietor records"}</span><h2>{isPersonal ? <>Sim Lip Geap’s personal<br />expenses, kept separate.</> : isCompany ? <>Solver Academy’s company<br />accounts, under control.</> : <>Sim Lip Geap’s business<br />expenses for Form B.</>}</h2><p>{isPersonal ? "Track personal spending and identify possible Form BE relief records without mixing them into the company account." : isCompany ? "Turn receipts and journals into a balanced MPERS General Ledger, P&L, Balance Sheet, Cash Flow and Form C working papers." : "Record sole proprietor income and expenses without mixing them into Solver Academy Sdn. Bhd. or ordinary personal spending."}</p><div className="hero-actions"><button className="dark-button" onClick={() => isCompany ? setTab("ledger") : setUploadOpen(true)}>{isCompany ? <BookOpen /> : <Paperclip />} {isPersonal ? "Upload personal receipt" : isCompany ? "Open company accounts" : "Upload Form B receipt"}</button>{isCompany && <button className="secondary" onClick={() => setUploadOpen(true)}><Paperclip /> Upload company receipt</button>}</div><small>Saved to {isCompany ? "Solver Academy Sdn. Bhd." : isPersonal ? "Sim Lip Geap · Personal" : "Sim Lip Geap · Sole proprietor"}</small></div>
+              <div><span className="pill"><Sparkles /> {isPersonal ? "Personal tax relief" : isCompany ? "Sdn. Bhd. accounting" : "Sole proprietor records"}</span><h2>{isPersonal ? <>Sim Lip Geap’s personal<br />expenses, kept separate.</> : isCompany ? <>Solver Academy’s company<br />accounts, under control.</> : <>Sim Lip Geap’s business<br />expenses for Form B.</>}</h2><p>{isPersonal ? "Track personal spending and identify possible Form BE relief records without mixing them into the company account." : isCompany ? "Turn receipts and journals into a balanced MPERS General Ledger, P&L, Balance Sheet, Cash Flow and Form C working papers." : "Record sole proprietor income and expenses in a separate General Ledger, P&L, Balance Sheet and Cash Flow for Form B."}</p><div className="hero-actions"><button className="dark-button" onClick={() => isPersonal ? setUploadOpen(true) : setTab("ledger")}>{isPersonal ? <Paperclip /> : <BookOpen />} {isPersonal ? "Upload personal receipt" : isCompany ? "Open company accounts" : "Open Form B accounts"}</button>{!isPersonal && <button className="secondary" onClick={() => setUploadOpen(true)}><Paperclip /> {isCompany ? "Upload company receipt" : "Upload Form B receipt"}</button>}</div><small>Saved to {isCompany ? "Solver Academy Sdn. Bhd." : isPersonal ? "Sim Lip Geap · Personal" : "Sim Lip Geap · Sole proprietor"}</small></div>
               <div className="receipt-stack" aria-hidden="true"><div className="receipt-paper back"></div><div className="receipt-paper front"><div className="receipt-top"><span className="logo-dot">{entity === "personal" ? "K" : "P"}</span><div><b>{entity === "personal" ? "KPJ MEDICAL" : "PETRONAS"}</b><small>{entity === "personal" ? "Personal receipt" : "Business receipt"}</small></div><span className="verified"><Check /></span></div><div className="scan-lines"><i></i><i></i><i></i></div><div className="receipt-total"><span>Total</span><strong>{entity === "personal" ? "RM 180.00" : "RM 120.50"}</strong></div><div className="category-tag">{entity === "personal" ? <HeartPulse /> : <Fuel />} {entity === "personal" ? "Medical" : "Petrol"} <span>{entity === "personal" ? "Form BE" : "80% use"}</span></div></div></div>
             </section>
 
@@ -721,7 +723,7 @@ export default function Home() {
           </div>
         )}
 
-        {isCompany && (["ledger", "pl", "balance", "cashflow", "tax"] as string[]).includes(tab) && <CompanyAccounting view={tab as CompanyAccountingView} receipts={companyAccountingReceipts} onToast={(message) => { setToast(message); setTimeout(() => setToast(""), 3600); }} />}
+        {!isPersonal && ((["ledger", "pl", "balance", "cashflow"] as string[]).includes(tab) || (isCompany && tab === "tax")) && <CompanyAccounting key={isCompany ? "company-ledger" : "sole-proprietor-ledger"} mode={isCompany ? "company" : "soleProprietor"} view={tab as CompanyAccountingView} receipts={isCompany ? companyAccountingReceipts : soleProprietorAccountingReceipts} onToast={(message) => { setToast(message); setTimeout(() => setToast(""), 3600); }} />}
 
         {tab === "filing" && (
           <div className="content filing-page">
@@ -737,7 +739,7 @@ export default function Home() {
 
             {isCompany && <section className="legal-warning confirmed"><ShieldCheck /><div><strong>Legal entity confirmed: Solver Academy Sdn. Bhd.</strong><p>This company workspace uses Borang C and MPERS. It is completely separated from Sim Lip Geap’s personal Borang BE and sole proprietor Borang B records.</p></div></section>}
             {entity === "business" && <section className="legal-warning confirmed"><ShieldCheck /><div><strong>Legal entity confirmed: individual sole proprietor</strong><p>This workspace uses Borang B and remains separate from Solver Academy Sdn. Bhd.’s Borang C accounts.</p></div></section>}
-            <section className="auto-calc-note"><CircleDollarSign /><div><strong>{isCompany ? "Company receipts create draft journals" : "Receipt-linked amounts update automatically"}</strong><p>{isPersonal ? "Only receipts marked as Relief flow into matching fields. Annual relief limits are not applied automatically, so review the final claim before filing." : isCompany ? "A company receipt affects P&L, Balance Sheet, Cash Flow and Form C only after its balanced journal and business purpose are confirmed and posted." : "Only receipts confirmed as sole proprietor business use flow into Form B amounts, using the confirmed business-use percentage."}</p></div></section>
+            <section className="auto-calc-note"><CircleDollarSign /><div><strong>{isPersonal ? "Receipt-linked amounts update automatically" : isCompany ? "Company receipts create draft journals" : "Form B receipts create draft journals"}</strong><p>{isPersonal ? "Only receipts marked as Relief flow into matching fields. Annual relief limits are not applied automatically, so review the final claim before filing." : isCompany ? "A company receipt affects P&L, Balance Sheet, Cash Flow and Form C only after its balanced journal and business purpose are confirmed and posted." : "A sole proprietor receipt affects the Form B P&L, Balance Sheet and Cash Flow only after its balanced journal and business purpose are confirmed and posted."}</p></div></section>
 
             <section className="filing-summary">
               <article><span className="mini-icon green"><ClipboardCheck /></span><div><small>Completed</small><strong>{filingDone} / {filingItems.length}</strong></div></article>

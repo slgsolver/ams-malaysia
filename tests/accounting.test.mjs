@@ -9,13 +9,15 @@ import {
   profitAndLoss,
   reverseJournal,
   seedJournalEntries,
+  seedSoleProprietorJournalEntries,
+  soleProprietorChartOfAccounts,
   taxComputation,
   trialBalance,
   validateJournal,
 } from "../app/lib/accounting.ts";
 
 test("seed company ledger is balanced across all three financial statements", () => {
-  assert.ok(seedJournalEntries.every(validateJournal));
+  assert.ok(seedJournalEntries.every((entry) => validateJournal(entry)));
   const trial = trialBalance(seedJournalEntries);
   assert.equal(trial.reduce((sum, row) => sum + row.debit, 0), trial.reduce((sum, row) => sum + row.credit, 0));
 
@@ -45,6 +47,34 @@ test("mixed-use receipt creates a balanced draft with director current account",
   assert.equal(entry.lines.find((line) => line.accountCode === "1350")?.debit, 30);
   assert.deepEqual(journalTotals(entry), { debit: 100, credit: 100 });
   assert.ok(validateJournal(entry));
+});
+
+test("Form B ledger uses owner drawings and keeps all three reports balanced", () => {
+  assert.deepEqual(seedSoleProprietorJournalEntries, []);
+  const draft = createReceiptJournal({
+    id: "form-b-mixed-1",
+    merchant: "Maxis Berhad",
+    amount: 100,
+    category: "Mobile",
+    businessUse: 70,
+    taxUse: "Business",
+    businessPurpose: "Sole proprietor mobile plan",
+  }, { privateAccountCode: "3200" });
+  assert.equal(draft.lines.find((line) => line.accountCode === "6030")?.debit, 70);
+  assert.equal(draft.lines.find((line) => line.accountCode === "3200")?.debit, 30);
+  assert.equal(draft.lines.some((line) => line.accountCode === "1350"), false);
+  assert.ok(validateJournal(draft, soleProprietorChartOfAccounts));
+
+  const posted = [{ ...draft, status: "posted" }];
+  const pnl = profitAndLoss(posted, soleProprietorChartOfAccounts);
+  const balance = balanceSheet(posted, soleProprietorChartOfAccounts);
+  const cashFlow = cashFlowStatement(posted, soleProprietorChartOfAccounts);
+  assert.equal(pnl.totalExpenses, 70);
+  assert.ok(balance.balanced);
+  assert.equal(cashFlow.operating, -70);
+  assert.equal(cashFlow.financing, -30);
+  assert.equal(cashFlow.endingCash, -100);
+  assert.ok(cashFlow.reconciled);
 });
 
 test("reversal keeps the original audit trail and neutralises its balances", () => {
