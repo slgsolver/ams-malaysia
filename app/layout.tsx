@@ -18,14 +18,14 @@ export async function generateMetadata(): Promise<Metadata> {
   const host = requestHeaders.get("x-forwarded-host") ?? requestHeaders.get("host") ?? "localhost:3000";
   const protocol = requestHeaders.get("x-forwarded-proto") ?? (host.startsWith("localhost") ? "http" : "https");
   const origin = `${protocol}://${host}`;
-  const title = "AMS Malaysia — Smart Receipt & Tax Records";
-  const description = "Organise Malaysian receipts, review business expenses, and prepare records for Form B or Form BE.";
+  const title = "AMS Malaysia — Accounting, Receipts & LHDN Tax Records";
+  const description = "Malaysian receipt capture, MPERS double-entry accounts, P&L, Balance Sheet, Cash Flow, Borang BE, Borang B and Borang C preparation.";
   return {
     metadataBase: new URL(origin),
     title,
     description,
     icons: { icon: "/favicon.svg", shortcut: "/favicon.svg" },
-    openGraph: { title, description, type: "website", locale: "en_MY", images: [{ url: `${origin}/og-v6.png`, width: 1732, height: 908, alt: "AMS Malaysia automatically fills editable Borang BE and Borang B checklist amounts from receipts" }] },
+    openGraph: { title, description, type: "website", locale: "en_MY", images: [{ url: `${origin}/og-v6.png`, width: 1732, height: 908, alt: "AMS Malaysia accounting and LHDN preparation for individuals and Sdn. Bhd. companies" }] },
     twitter: { card: "summary_large_image", title, description, images: [`${origin}/og-v6.png`] },
   };
 }

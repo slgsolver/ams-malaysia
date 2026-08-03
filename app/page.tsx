@@ -44,15 +44,17 @@ import {
   Ticket,
   TrendingUp,
   UtensilsCrossed,
-  UserRound,
   WalletCards,
   Wifi,
   X,
 } from "lucide-react";
 import { CSSProperties, FormEvent, useEffect, useMemo, useRef, useState } from "react";
+import CompanyAccounting, { CompanyAccountingView } from "./components/company-accounting";
+import { balanceSheet, cashFlowStatement, profitAndLoss, seedJournalEntries, taxComputation } from "./lib/accounting";
+import type { AccountingReceipt, JournalEntry } from "./lib/accounting";
 import { translateToChinese } from "./i18n";
 
-type Entity = "personal" | "business";
+type Entity = "personal" | "business" | "company";
 type Category = "Food & Beverage" | "Stationery" | "Petrol" | "Toll Fee" | "Mobile" | "Entertainment" | "Office Rent" | "Software & Subscriptions" | "Professional Fees" | "Advertising & Marketing" | "Utilities" | "Medical" | "Lifestyle" | "Education" | "Insurance" | "EPF & SOCSO" | "Zakat" | "Others";
 type Receipt = {
   id: string;
@@ -91,25 +93,17 @@ const categoryMeta: Record<Category, { icon: typeof Fuel; tone: string }> = {
 };
 
 const seedReceipts: Receipt[] = [
-  { id: "1", entity: "business", merchant: "PETRONAS Station", date: "28 Jul 2026", amount: 120.5, category: "Petrol", taxUse: "Business", businessUse: 80, businessPurpose: "Client visit — Petaling Jaya", myInvoisUuid: "EI-98F2-71A0", confidence: 98 },
-  { id: "2", entity: "business", merchant: "Touch 'n Go eWallet", date: "27 Jul 2026", amount: 36.8, category: "Toll Fee", taxUse: "Business", businessUse: 100, businessPurpose: "Delivery and client travel", confidence: 96 },
-  { id: "3", entity: "business", merchant: "Maxis Berhad", date: "25 Jul 2026", amount: 128, category: "Mobile", taxUse: "Business", businessUse: 70, businessPurpose: "Shared business mobile plan", myInvoisUuid: "EI-44B1-901D", confidence: 99 },
-  { id: "4", entity: "business", merchant: "POPULAR Bookstore", date: "23 Jul 2026", amount: 54.9, category: "Stationery", taxUse: "Business", businessUse: 100, businessPurpose: "Office supplies", confidence: 94 },
-  { id: "5", entity: "business", merchant: "Google Workspace", date: "20 Jul 2026", amount: 72, category: "Software & Subscriptions", taxUse: "Business", businessUse: 100, businessPurpose: "Business email and cloud storage", confidence: 99 },
-  { id: "6", entity: "business", merchant: "Meta Platforms", date: "16 Jul 2026", amount: 350, category: "Advertising & Marketing", taxUse: "Business", businessUse: 100, businessPurpose: "July course promotion", confidence: 97 },
+  { id: "1", entity: "company", merchant: "PETRONAS Station", date: "28 Jul 2026", amount: 120.5, category: "Petrol", taxUse: "Business", businessUse: 80, businessPurpose: "Client visit — Petaling Jaya", myInvoisUuid: "EI-98F2-71A0", confidence: 98 },
+  { id: "2", entity: "company", merchant: "Touch 'n Go eWallet", date: "27 Jul 2026", amount: 36.8, category: "Toll Fee", taxUse: "Business", businessUse: 100, businessPurpose: "Delivery and client travel", confidence: 96 },
+  { id: "3", entity: "company", merchant: "Maxis Berhad", date: "25 Jul 2026", amount: 128, category: "Mobile", taxUse: "Business", businessUse: 70, businessPurpose: "Shared business mobile plan", myInvoisUuid: "EI-44B1-901D", confidence: 99 },
+  { id: "4", entity: "company", merchant: "POPULAR Bookstore", date: "23 Jul 2026", amount: 54.9, category: "Stationery", taxUse: "Business", businessUse: 100, businessPurpose: "Office supplies", confidence: 94 },
+  { id: "5", entity: "company", merchant: "Google Workspace", date: "20 Jul 2026", amount: 72, category: "Software & Subscriptions", taxUse: "Business", businessUse: 100, businessPurpose: "Business email and cloud storage", confidence: 99 },
+  { id: "6", entity: "company", merchant: "Meta Platforms", date: "16 Jul 2026", amount: 350, category: "Advertising & Marketing", taxUse: "Business", businessUse: 100, businessPurpose: "July course promotion", confidence: 97 },
   { id: "p1", entity: "personal", merchant: "KPJ Specialist Centre", date: "18 Jul 2026", amount: 180, category: "Medical", taxUse: "Relief", businessUse: 0, businessPurpose: "Medical receipt", confidence: 97 },
   { id: "p2", entity: "personal", merchant: "POPULAR Bookstore", date: "12 Jul 2026", amount: 128, category: "Lifestyle", taxUse: "Relief", businessUse: 0, businessPurpose: "Books for personal reading", confidence: 93 },
   { id: "p3", entity: "personal", merchant: "Prudential Assurance", date: "05 Jul 2026", amount: 260, category: "Insurance", taxUse: "Relief", businessUse: 0, businessPurpose: "Life insurance premium", confidence: 99 },
   { id: "p4", entity: "personal", merchant: "Lembaga Zakat Selangor", date: "01 Jul 2026", amount: 300, category: "Zakat", taxUse: "Relief", businessUse: 0, businessPurpose: "Zakat payment", confidence: 99 },
   { id: "p5", entity: "personal", merchant: "Village Grocer", date: "29 Jun 2026", amount: 186.4, category: "Food & Beverage", taxUse: "Personal", businessUse: 0, businessPurpose: "Household groceries", confidence: 96 },
-];
-
-const reliefs = [
-  { name: "Medical", amount: 180, receipts: 1, status: "Recorded" },
-  { name: "Lifestyle", amount: 1250, receipts: 4, status: "Review limit" },
-  { name: "EPF", amount: 4000, receipts: 12, status: "Recorded" },
-  { name: "SOCSO", amount: 350, receipts: 12, status: "Recorded" },
-  { name: "Zakat", amount: 600, receipts: 2, status: "Tax rebate" },
 ];
 
 const bankTransactions = [
@@ -123,6 +117,46 @@ type FilingItem = { id: string; label: string; detail: string; required?: boolea
 type FilingSection = { id: string; title: string; note: string; items: FilingItem[] };
 
 function filingSections(entity: Entity): FilingSection[] {
+  if (entity === "company") return [
+    { id: "company-profile", title: "A · Company particulars", note: "Solver Academy Sdn. Bhd. · Borang C", items: [
+      { id: "tin", label: "Company Tax Identification Number (TIN)", detail: "Company TIN registered with HASiL", required: true },
+      { id: "ssm", label: "SSM registration number and company name", detail: "Legal name and BRN must match the company profile", required: true },
+      { id: "business-code", label: "Business code and principal activity", detail: "Education and training activity code used in Form C", required: true },
+      { id: "address", label: "Registered and business addresses", detail: "Current correspondence and operating addresses", required: true },
+      { id: "accounting-period", label: "Accounting period", detail: "1 January to 31 December 2026", required: true },
+      { id: "directors", label: "Directors, tax representative and audit status", detail: "Director particulars and audited or qualifying unaudited status", required: true },
+    ]},
+    { id: "financial-statements", title: "B · MPERS financial statements", note: "Generated from the posted General Ledger", items: [
+      { id: "trial-balance", label: "Balanced Trial Balance", detail: "Every journal must have equal debit and credit", required: true },
+      { id: "profit-loss", label: "Profit & Loss and detailed income statement", detail: "Revenue, expenses, finance costs and profit before tax", required: true },
+      { id: "balance-sheet", label: "Balance Sheet", detail: "Assets must equal liabilities plus equity", required: true },
+      { id: "cash-flow", label: "Cash Flow Statement", detail: "MPERS indirect method reconciled to closing cash", required: true },
+      { id: "comparatives", label: "Prior-year comparative figures", detail: "Opening balances and prior-year signed accounts" },
+    ]},
+    { id: "tax-computation", title: "C · Company tax computation", note: "Book-to-tax reconciliation for Borang C", items: [
+      { id: "profit-before-tax", label: "Profit before tax", detail: "Linked to the MPERS Profit & Loss", required: true },
+      { id: "addbacks", label: "Non-deductible expenses and tax adjustments", detail: "Depreciation, private, capital and restricted items", required: true },
+      { id: "capital-allowance", label: "Capital allowance schedule", detail: "Schedule 3 asset cost, initial, annual and balancing allowances", required: true },
+      { id: "losses", label: "Unabsorbed losses and allowances", detail: "Prior-year balances and utilisation" },
+      { id: "incentives", label: "Tax incentives and exempt income", detail: "Include detailed computation only when claimed" },
+      { id: "chargeable-income", label: "Chargeable income and tax payable", detail: "Confirm SME status, related-company conditions and applicable YA rates", required: true },
+    ]},
+    { id: "tax-estimation", title: "D · CP204 and tax payments", note: "Company estimate, revisions and instalments", items: [
+      { id: "cp204", label: "CP204 estimated tax payable", detail: "Annual estimate and submission confirmation", required: true },
+      { id: "cp204a", label: "CP204A revisions", detail: "Review months 6, 9 and 11 where applicable" },
+      { id: "instalments", label: "Monthly tax instalments", detail: "Payment schedule, receipts and outstanding amounts", required: true },
+      { id: "balance-tax", label: "Balance of tax payable", detail: "Reconcile actual liability to CP204 instalments", required: true },
+      { id: "withholding", label: "Withholding tax records", detail: "Contracts and payment evidence for relevant non-resident payments" },
+    ]},
+    { id: "mitrs", title: "E · Form C, MITRS and retention", note: "Submission pack and seven-year audit trail", items: [
+      { id: "form-c", label: "Borang C submission", detail: "Due within seven months after the accounting year end", required: true },
+      { id: "financial-pdf", label: "Audited / unaudited financial statements PDF", detail: "Financial statements forming the basis of the tax computation", required: true },
+      { id: "tax-computation-pdf", label: "Income tax computation PDF", detail: "Detailed P&L and tax adjustments", required: true },
+      { id: "capital-allowance-pdf", label: "Capital allowance schedule PDF", detail: "Required through MITRS when capital allowance is claimed" },
+      { id: "mitrs-deadline", label: "MITRS submission", detail: "Within 30 days after the Form C due date", required: true },
+      { id: "retention", label: "Seven-year accounting records", detail: "Keep ledgers, invoices, receipts and working papers", required: true },
+    ]},
+  ];
   const common: FilingSection[] = [
     { id: "identity", title: "A · Taxpayer particulars", note: "Personal details shown in the return", items: [
       { id: "tin", label: "Tax Identification Number (TIN)", detail: "Individual TIN registered with HASiL", required: true },
@@ -167,57 +201,52 @@ function filingSections(entity: Entity): FilingSection[] {
     ]},
   ];
   return [...common,
-    { id: "business-profile", title: "B · Business particulars", note: "For an individual carrying on business", items: [
-      { id: "legal-type", label: "Confirm business legal type", detail: "Borang B is for an individual business/sole proprietor; a Sdn. Bhd. generally files Form C", required: true },
-      { id: "business-name", label: "Business name and registration number", detail: "SSM name / BRN and principal business address", required: true },
-      { id: "business-code", label: "Business code / activity", detail: "Relevant HASiL business code and activity description", required: true },
-      { id: "accounting-period", label: "Accounting period", detail: "Opening and closing date of the business accounts", required: true },
-      { id: "partners", label: "Partnership details", detail: "Partnership TIN and statutory income share, if applicable" },
+    { id: "business-profile", title: "B · Sole proprietor particulars", note: "For Sim Lip Geap carrying on an individual business", items: [
+      { id: "business-name", label: "Business name and registration number", detail: "SSM business name / BRN and principal address", required: true },
+      { id: "business-code", label: "Business code and activity", detail: "Relevant HASiL business code and activity description", required: true },
+      { id: "accounting-period", label: "Accounting period", detail: "Opening and closing date of the sole proprietor accounts", required: true },
+      { id: "bank", label: "Business bank and cash records", detail: "Statements and reconciliations kept separately from private spending", required: true },
     ]},
-    { id: "profit-loss", title: "C · Business income computation", note: "Profit and loss plus tax adjustments", items: [
+    { id: "profit-loss", title: "C · Business income computation", note: "Sole proprietor P&L and tax adjustments", items: [
       { id: "sales", label: "Sales / gross business receipts", detail: "Invoices, platform settlements and cash sales", required: true },
-      { id: "stock", label: "Opening and closing stock", detail: "Stock valuation and purchase records where applicable" },
-      { id: "cost-sales", label: "Purchases and cost of sales", detail: "Supplier invoices, freight and direct costs" },
-      { id: "expenses", label: "Allowable business expenses", detail: "Expense ledger, receipts, business purpose and private-use adjustment", required: true },
-      { id: "non-allowable", label: "Non-allowable / private expenses", detail: "Add back personal, capital and prohibited expenses", required: true },
-      { id: "capital-allowance", label: "Capital allowance schedule", detail: "Assets purchased/disposed, initial and annual allowances" },
-      { id: "losses", label: "Current / brought-forward business losses", detail: "Working sheets and prior-year balance" },
-      { id: "statutory-income", label: "Adjusted and statutory business income", detail: "Tax computation reconciliation", required: true },
+      { id: "cost-sales", label: "Purchases and cost of sales", detail: "Supplier invoices and direct business costs" },
+      { id: "expenses", label: "Allowable business expenses", detail: "Receipt register, business purpose and private-use adjustment", required: true },
+      { id: "non-allowable", label: "Non-allowable and private expenses", detail: "Add back private, capital and prohibited items", required: true },
+      { id: "capital-allowance", label: "Capital allowance schedule", detail: "Business assets purchased or disposed" },
+      { id: "losses", label: "Current and brought-forward business losses", detail: "Working sheets and prior-year balances" },
+      { id: "statutory-income", label: "Adjusted and statutory business income", detail: "Borang B tax computation reconciliation", required: true },
     ]},
-    { id: "other-income", title: "Other income and total income", note: "Borang B also includes non-business sources", items: [
-      { id: "employment", label: "Employment income / EA form", detail: "Salary, benefits and PCB if also employed" },
-      { id: "rental", label: "Rental income", detail: "Gross rent and allowable direct expenses" },
-      { id: "interest-royalty", label: "Interest, discounts and royalties", detail: "Taxable amounts where applicable" },
-      { id: "foreign-other", label: "Foreign and other income", detail: "Relevant amounts received in Malaysia and supporting records" },
-      { id: "donations", label: "Approved donations / gifts", detail: "Official receipts and applicable restriction" },
+    { id: "reliefs-payments", title: "D · Personal reliefs and tax paid", note: "Form B remains the individual taxpayer’s return", items: [
+      { id: "personal-reliefs", label: "Personal relief schedule", detail: "Use Sim Lip Geap’s personal evidence and applicable YA limits", required: true },
+      { id: "zakat", label: "Zakat / fitrah rebate", detail: "Official payment receipt" },
+      { id: "cp500", label: "CP500 instalments", detail: "All individual business instalments paid", required: true },
+      { id: "pcb", label: "PCB / MTD", detail: "Employment tax deductions if Sim is also employed" },
     ]},
-    { id: "reliefs-payments", title: "Reliefs, rebates and tax paid", note: "Personal items still belong to Sim Lip Geap as the Form B taxpayer", items: [
-      { id: "personal-reliefs", label: "Personal relief schedule", detail: "Medical, lifestyle, insurance, EPF, spouse and child evidence", required: true },
-      { id: "zakat", label: "Zakat / fitrah rebate", detail: "Official receipt" },
-      { id: "cp500", label: "CP500 instalments", detail: "All instalments paid for the year", required: true },
-      { id: "pcb", label: "PCB / MTD", detail: "Employment tax deductions, if any" },
-      { id: "section110", label: "Section 110 / foreign tax credit", detail: "Certificates and HK-6 / HK-8 / HK-9 where relevant" },
-    ]},
-    { id: "declaration", title: "Declaration and supporting records", note: "Final filing and audit support", items: [
-      { id: "myinvois", label: "e-Invoice / MyInvois register", detail: "Validated sales and purchase references where applicable" },
-      { id: "mitrs", label: "MITRS supporting documents", detail: "Prepare specified financial information and tax computation when required" },
-      { id: "agent", label: "Tax agent particulars", detail: "Name and approval number if an agent prepares the return" },
-      { id: "declaration", label: "Declaration of true and complete information", detail: "Review all income sources and claims", required: true },
-      { id: "retention", label: "Seven-year document retention", detail: "Keep accounts, receipts and working sheets", required: true },
+    { id: "declaration", title: "E · Declaration and supporting records", note: "Final e-B filing and audit support", items: [
+      { id: "myinvois", label: "MyInvois purchase and sales register", detail: "Validated references where applicable" },
+      { id: "declaration", label: "Declaration of true and complete information", detail: "Review every income source and claim", required: true },
+      { id: "retention", label: "Seven-year document retention", detail: "Keep accounts, invoices, receipts and working sheets", required: true },
     ]},
   ];
 }
 
 function defaultFilingChecks(entity: Entity): Record<string, boolean> {
-  return entity === "personal" ? {
+  if (entity === "personal") return {
     "identity:id": true, "identity:contact": true, "identity:personal": true,
     "relief:medical": true, "relief:lifestyle": true, "relief:insurance": true,
     "payments:zakat": true, "declaration:retention": true,
-  } : {
-    "identity:id": true, "identity:contact": true, "identity:personal": true,
+  };
+  if (entity === "company") return {
+    "company-profile:ssm": true, "company-profile:business-code": true, "company-profile:accounting-period": true,
+    "financial-statements:trial-balance": true, "financial-statements:profit-loss": true,
+    "financial-statements:balance-sheet": true, "financial-statements:cash-flow": true,
+    "mitrs:retention": true,
+  };
+  return {
+    "identity:id": true, "identity:contact": true,
     "business-profile:business-name": true, "business-profile:business-code": true,
     "profit-loss:sales": true, "profit-loss:expenses": true,
-    "declaration:myinvois": true, "declaration:retention": true,
+    "declaration:retention": true,
   };
 }
 
@@ -226,6 +255,8 @@ const monetaryFilingKeys = new Set([
   "relief:parents", "relief:medical", "relief:education", "relief:lifestyle", "relief:insurance", "relief:epf", "relief:spouse-child", "relief:sspn-prs", "relief:donation",
   "payments:pcb", "payments:zakat", "payments:section110", "payments:foreign-tax",
   "profit-loss:sales", "profit-loss:stock", "profit-loss:cost-sales", "profit-loss:expenses", "profit-loss:non-allowable", "profit-loss:capital-allowance", "profit-loss:losses", "profit-loss:statutory-income",
+  "tax-computation:profit-before-tax", "tax-computation:addbacks", "tax-computation:capital-allowance", "tax-computation:losses", "tax-computation:chargeable-income",
+  "tax-estimation:cp204", "tax-estimation:instalments", "tax-estimation:balance-tax",
   "other-income:employment", "other-income:rental", "other-income:interest-royalty", "other-income:foreign-other", "other-income:donations",
   "reliefs-payments:personal-reliefs", "reliefs-payments:zakat", "reliefs-payments:cp500", "reliefs-payments:pcb", "reliefs-payments:section110",
 ]);
@@ -249,7 +280,7 @@ function autoFilingAmount(key: string, receipts: Receipt[]): AutoFilingAmount | 
   if (categoryMap[key]) return categoryTotal(categoryMap[key]);
   if (key === "profit-loss:expenses") {
     const matched = receipts.filter((receipt) => receipt.entity === "business" && receipt.taxUse === "Business");
-    return { amount: matched.reduce((sum, receipt) => sum + receipt.amount * receipt.businessUse / 100, 0), receiptCount: matched.length, source: "Solver Academy receipts" };
+    return { amount: matched.reduce((sum, receipt) => sum + receipt.amount * receipt.businessUse / 100, 0), receiptCount: matched.length, source: "Sole proprietor receipts" };
   }
   if (key === "reliefs-payments:personal-reliefs") {
     const matched = personalReliefs.filter((receipt) => receipt.category !== "Zakat");
@@ -307,26 +338,29 @@ function extractAmount(text: string) {
 export default function Home() {
   const [receipts, setReceipts] = useState(seedReceipts);
   const [receiptsReady, setReceiptsReady] = useState(false);
-  const [entity, setEntity] = useState<Entity>("business");
-  const [tab, setTab] = useState<"overview" | "receipts" | "bank" | "myinvois" | "filing" | "tax" | "audit">("overview");
-  const [activeForm, setActiveForm] = useState<"B" | "BE">("B");
+  const [entity, setEntity] = useState<Entity>("company");
+  const [tab, setTab] = useState<"overview" | "receipts" | "bank" | "myinvois" | "ledger" | "pl" | "balance" | "cashflow" | "filing" | "tax" | "audit">("overview");
+  const [activeForm, setActiveForm] = useState<"B" | "C" | "BE">("C");
   const [uploadOpen, setUploadOpen] = useState(false);
   const [processing, setProcessing] = useState(false);
   const [progress, setProgress] = useState(0);
   const [draft, setDraft] = useState<Receipt | null>(null);
-  const [uploadFile, setUploadFile] = useState<File | null>(null);
+  const [, setUploadFile] = useState<File | null>(null);
   const [query, setQuery] = useState("");
   const [toast, setToast] = useState("");
   const [menuOpen, setMenuOpen] = useState(false);
-  const [bankRows, setBankRows] = useState(bankTransactions);
-  const [filingChecks, setFilingChecks] = useState<Record<string, boolean>>(defaultFilingChecks("business"));
+  const [bankRowsByEntity, setBankRowsByEntity] = useState<Record<"business" | "company", typeof bankTransactions>>({ business: [], company: bankTransactions });
+  const [filingChecks, setFilingChecks] = useState<Record<string, boolean>>(defaultFilingChecks("company"));
   const [filingAmounts, setFilingAmounts] = useState<Record<string, number>>({});
   const [manualAmountKeys, setManualAmountKeys] = useState<string[]>([]);
   const [savingChecklist, setSavingChecklist] = useState(false);
   const [language, setLanguage] = useState<"en" | "zh">("en");
+  const [languageReady, setLanguageReady] = useState(false);
   const fileRef = useRef<HTMLInputElement>(null);
 
   const entityReceipts = useMemo(() => receipts.filter((item) => item.entity === entity), [receipts, entity]);
+  const entityInvoices = useMemo(() => entityReceipts.filter((item) => item.myInvoisUuid), [entityReceipts]);
+  const companyAccountingReceipts = useMemo<AccountingReceipt[]>(() => receipts.filter((item) => item.entity === "company").map((item) => ({ id: item.id, merchant: item.merchant, amount: item.amount, category: item.category, businessUse: item.businessUse, taxUse: item.taxUse, businessPurpose: item.businessPurpose, fileName: item.fileName })), [receipts]);
   const totals = useMemo(() => {
     const total = entityReceipts.reduce((sum, item) => sum + item.amount, 0);
     const business = entityReceipts.filter((item) => item.taxUse === "Business").reduce((sum, item) => sum + item.amount * item.businessUse / 100, 0);
@@ -341,21 +375,35 @@ export default function Home() {
   const filingPercent = Math.round(filingDone / Math.max(filingItems.length, 1) * 100);
   const autoFilingAmounts = useMemo(() => Object.fromEntries(filingItems.map((item) => [item.key, autoFilingAmount(item.key, receiptsReady ? receipts : [])]).filter(([, amount]) => amount !== null)) as Record<string, AutoFilingAmount>, [filingItems, receipts, receiptsReady]);
   const autoFilledFields = Object.values(autoFilingAmounts).filter((item) => item.amount > 0).length;
+  const isPersonal = entity === "personal";
+  const isCompany = entity === "company";
+  const currentForm = isPersonal ? "BE" : isCompany ? "C" : "B";
+  const currentName = isCompany ? "Solver Academy" : "Sim Lip Geap";
+  const currentAccountLabel = isPersonal ? "Personal" : isCompany ? "Sdn. Bhd." : "Sole proprietor";
+  const bankRows = isPersonal ? [] : bankRowsByEntity[entity];
 
   useEffect(() => {
+    // eslint-disable-next-line react-hooks/set-state-in-effect -- hydrate the saved display language after mount
     if (window.localStorage.getItem("ams-language") === "zh") setLanguage("zh");
+    setLanguageReady(true);
   }, []);
 
   useEffect(() => {
     try {
       const stored = window.localStorage.getItem("ams-receipts");
       if (stored) {
-        const savedReceipts = JSON.parse(stored);
+        let savedReceipts = JSON.parse(stored);
+        if (Array.isArray(savedReceipts) && !window.localStorage.getItem("ams-company-entity-v1-migrated")) {
+          savedReceipts = savedReceipts.map((receipt) => receipt?.entity === "business" ? { ...receipt, entity: "company" } : receipt);
+          window.localStorage.setItem("ams-company-entity-v1-migrated", "true");
+        }
+        // eslint-disable-next-line react-hooks/set-state-in-effect -- hydrate saved receipt records after mount
         if (Array.isArray(savedReceipts)) setReceipts(savedReceipts);
       }
     } catch {
       // Keep the built-in examples when the browser blocks local storage.
     } finally {
+      try { window.localStorage.setItem("ams-company-entity-v1-migrated", "true"); } catch { /* Storage can be unavailable. */ }
       setReceiptsReady(true);
     }
   }, []);
@@ -365,6 +413,7 @@ export default function Home() {
   }, [receipts, receiptsReady]);
 
   useEffect(() => {
+    if (!languageReady) return;
     window.localStorage.setItem("ams-language", language);
     document.documentElement.lang = language === "zh" ? "zh-Hans-MY" : "en-MY";
     if (language !== "zh") return;
@@ -414,10 +463,11 @@ export default function Home() {
       translatedNodes.forEach((node) => { if (node.isConnected) node.nodeValue = originals.get(node) || node.nodeValue; });
       originalAttributes.forEach((attributes, element) => attributes.forEach((value, attribute) => element.setAttribute(attribute, value)));
     };
-  }, [language]);
+  }, [language, languageReady]);
 
   useEffect(() => {
     const defaults = defaultFilingChecks(entity);
+    // eslint-disable-next-line react-hooks/set-state-in-effect -- reset checklist state when switching legal entities
     setFilingChecks(defaults);
     setFilingAmounts({});
     setManualAmountKeys([]);
@@ -448,10 +498,10 @@ export default function Home() {
 
   function changeEntity(next: Entity) {
     setEntity(next);
-    setActiveForm(next === "personal" ? "BE" : "B");
+    setActiveForm(next === "personal" ? "BE" : next === "business" ? "B" : "C");
     setTab("overview");
     setQuery("");
-    setToast(next === "personal" ? "Switched to Sim Lip Geap · Personal" : "Switched to Solver Academy · Business");
+    setToast(next === "personal" ? "Switched to Sim Lip Geap · Personal" : next === "business" ? "Switched to Sim Lip Geap · Sole proprietor · Form B" : "Switched to Solver Academy Sdn. Bhd. · Form C");
     setTimeout(() => setToast(""), 2500);
   }
 
@@ -485,7 +535,7 @@ export default function Home() {
       amount,
       category,
       taxUse: entity === "personal" ? (["Medical", "Lifestyle", "Education", "Insurance", "EPF & SOCSO", "Zakat"] as Category[]).includes(category) ? "Relief" : "Personal" : category === "Entertainment" ? "Review" : "Business",
-      businessUse: entity === "business" ? category === "Mobile" || category === "Petrol" ? 70 : 100 : 0,
+      businessUse: entity !== "personal" ? category === "Mobile" || category === "Petrol" ? 70 : 100 : 0,
       businessPurpose: "",
       confidence: category === "Others" ? 72 : 93,
       fileName: file.name,
@@ -510,7 +560,7 @@ export default function Home() {
     const blob = new Blob([[header, ...rows].join("\n")], { type: "text/csv" });
     const link = document.createElement("a");
     link.href = URL.createObjectURL(blob);
-    link.download = `AMS-2026-${entity === "personal" ? "Sim-Lip-Geap" : "Solver-Academy"}.csv`;
+    link.download = `AMS-2026-${isCompany ? "Solver-Academy-Sdn-Bhd-Form-C" : isPersonal ? "Sim-Lip-Geap-Form-BE" : "Sim-Lip-Geap-Form-B"}.csv`;
     link.click();
     URL.revokeObjectURL(link.href);
     setToast("Tax summary exported as CSV.");
@@ -518,9 +568,21 @@ export default function Home() {
   }
 
   function downloadAuditPack() {
+    let companyJournals: JournalEntry[] = seedJournalEntries;
+    if (entity === "company") {
+      try {
+        const stored = window.localStorage.getItem("ams-company-journals-v1");
+        if (stored) {
+          const parsed = JSON.parse(stored);
+          if (Array.isArray(parsed)) companyJournals = parsed;
+        }
+      } catch {
+        // Export the built-in company ledger when browser storage is unavailable.
+      }
+    }
     const pack = {
       product: "AMS Malaysia",
-      entity: entity === "personal" ? "Sim Lip Geap" : "Solver Academy",
+      entity: isCompany ? "Solver Academy Sdn. Bhd." : isPersonal ? "Sim Lip Geap · Personal" : "Sim Lip Geap · Sole proprietor",
       yearOfAssessment: 2026,
       form: `Form ${activeForm}`,
       generatedAt: new Date().toISOString(),
@@ -528,6 +590,16 @@ export default function Home() {
       summary: { grossExpenses: totals.total, potentialBusinessDeductions: totals.business, personalReliefReceipts: totals.relief },
       receipts: entityReceipts,
       bankReconciliation: bankRows,
+      companyAccounting: isCompany ? {
+        framework: "MPERS",
+        functionalCurrency: "MYR",
+        accountingPeriod: "1 Jan 2026 to 31 Dec 2026",
+        journals: companyJournals,
+        profitAndLoss: profitAndLoss(companyJournals),
+        balanceSheet: balanceSheet(companyJournals),
+        cashFlowIndirectMethod: cashFlowStatement(companyJournals),
+        formCWorkingPaper: taxComputation(companyJournals),
+      } : undefined,
       disclaimer: "Prepared for review. Final tax treatment must be confirmed by the taxpayer or licensed tax agent.",
     };
     const blob = new Blob([JSON.stringify(pack, null, 2)], { type: "application/json" });
@@ -553,7 +625,7 @@ export default function Home() {
     if (!parsed.length) {
       setToast("No transactions found. Use CSV columns: Date, Description, Amount.");
     } else {
-      setBankRows(parsed);
+      if (entity !== "personal") setBankRowsByEntity((current) => ({ ...current, [entity]: parsed }));
       setToast(`${file.name} imported — ${parsed.filter((row) => row.status === "Matched").length} matches found.`);
     }
     setTimeout(() => setToast(""), 3600);
@@ -566,60 +638,65 @@ export default function Home() {
         <div className="entity-switcher">
           <label>Current account</label>
           <button className={entity === "personal" ? "selected" : ""} onClick={() => changeEntity("personal")}><span className="entity-avatar personal">SL</span><div><strong>Sim Lip Geap</strong><small>Personal · Form BE</small></div>{entity === "personal" && <Check />}</button>
-          <button className={entity === "business" ? "selected" : ""} onClick={() => changeEntity("business")}><span className="entity-avatar business">SA</span><div><strong>Solver Academy</strong><small>Business · Form B</small></div>{entity === "business" && <Check />}</button>
+          <button className={entity === "business" ? "selected" : ""} onClick={() => changeEntity("business")}><span className="entity-avatar soleprop">SP</span><div><strong>Sim Lip Geap</strong><small>Sole proprietor · Form B</small></div>{entity === "business" && <Check />}</button>
+          <button className={entity === "company" ? "selected" : ""} onClick={() => changeEntity("company")}><span className="entity-avatar business">SA</span><div><strong>Solver Academy</strong><small>Sdn. Bhd. · Form C</small></div>{entity === "company" && <Check />}</button>
         </div>
         <nav aria-label="Main navigation">
           <button className={tab === "overview" ? "active" : ""} onClick={() => setTab("overview")}><LayoutDashboard /> Overview</button>
           <button className={tab === "receipts" ? "active" : ""} onClick={() => setTab("receipts")}><ReceiptText /> Receipts <span className="nav-count">{entityReceipts.length}</span></button>
-          {entity === "business" && <button className={tab === "bank" ? "active" : ""} onClick={() => setTab("bank")}><Landmark /> Bank matching <span className="nav-alert">1</span></button>}
-          {entity === "business" && <button className={tab === "myinvois" ? "active" : ""} onClick={() => setTab("myinvois")}><ScanLine /> MyInvois</button>}
+          {!isPersonal && <button className={tab === "bank" ? "active" : ""} onClick={() => setTab("bank")}><Landmark /> Bank matching {bankRows.some((row) => row.status !== "Matched") && <span className="nav-alert">{bankRows.filter((row) => row.status !== "Matched").length}</span>}</button>}
+          {!isPersonal && <button className={tab === "myinvois" ? "active" : ""} onClick={() => setTab("myinvois")}><ScanLine /> MyInvois</button>}
+          {isCompany && <button className={tab === "ledger" ? "active" : ""} onClick={() => setTab("ledger")}><BookOpen /> General Ledger</button>}
+          {isCompany && <button className={tab === "pl" ? "active" : ""} onClick={() => setTab("pl")}><TrendingUp /> Profit &amp; Loss</button>}
+          {isCompany && <button className={tab === "balance" ? "active" : ""} onClick={() => setTab("balance")}><BarChart3 /> Balance Sheet</button>}
+          {isCompany && <button className={tab === "cashflow" ? "active" : ""} onClick={() => setTab("cashflow")}><CircleDollarSign /> Cash Flow</button>}
           <button className={tab === "filing" ? "active" : ""} onClick={() => setTab("filing")}><ClipboardCheck /> Form checklist <span className="nav-progress">{filingPercent}%</span></button>
-          <button className={tab === "tax" ? "active" : ""} onClick={() => setTab("tax")}><FileText /> Tax Report</button>
+          <button className={tab === "tax" ? "active" : ""} onClick={() => setTab("tax")}><FileText /> {isPersonal ? "Tax Report" : isCompany ? "Form C & Tax" : "Form B Tax"}</button>
           <button className={tab === "audit" ? "active" : ""} onClick={() => setTab("audit")}><Archive /> Audit Pack</button>
         </nav>
         <div className="sidebar-bottom">
-          <div className="tax-card"><span className="mini-icon"><FileCheck2 /></span><strong>YA 2026 · Form {entity === "personal" ? "BE" : "B"}</strong><p>{filingPercent}% of filing information marked ready.</p><button onClick={() => setTab("filing")}>Open filing checklist <ArrowUpRight /></button></div>
+          <div className="tax-card"><span className="mini-icon"><FileCheck2 /></span><strong>YA 2026 · Form {currentForm}</strong><p>{filingPercent}% of filing information marked ready.</p><button onClick={() => setTab("filing")}>Open filing checklist <ArrowUpRight /></button></div>
           <button className="help"><CircleHelp /> Help & tax guide</button>
-          <div className="profile"><span>{entity === "personal" ? "SL" : "SA"}</span><div><strong>{entity === "personal" ? "Sim Lip Geap" : "Solver Academy"}</strong><small>{entity === "personal" ? "Individual taxpayer" : "Business account"}</small></div><ChevronDown /></div>
+          <div className="profile"><span>{isCompany ? "SA" : "SL"}</span><div><strong>{currentName}</strong><small>{isPersonal ? "Individual taxpayer" : isCompany ? "Sdn. Bhd. company" : "Sole proprietor"}</small></div><ChevronDown /></div>
         </div>
       </aside>
 
       <section className="workspace">
         <header>
           <button className="mobile-menu" aria-label="Open menu" onClick={() => setMenuOpen(true)}><Menu /></button>
-          <div><p className="eyebrow">{entity === "personal" ? "SIM LIP GEAP · PERSONAL · FORM BE" : "SOLVER ACADEMY · BUSINESS · FORM B"}</p><h1>{tab === "overview" ? `Good morning, ${entity === "personal" ? "Sim" : "Solver"}` : tab === "receipts" ? `${entity === "personal" ? "Personal" : "Business"} receipts` : tab === "bank" ? "Bank reconciliation" : tab === "myinvois" ? "MyInvois records" : tab === "filing" ? `Borang ${entity === "personal" ? "BE" : "B"} information checklist` : tab === "audit" ? "Seven-year Audit Pack" : "Tax-ready summary"}</h1></div>
+          <div><p className="eyebrow">{isPersonal ? "SIM LIP GEAP · PERSONAL · FORM BE" : isCompany ? "SOLVER ACADEMY SDN. BHD. · MPERS · FORM C" : "SIM LIP GEAP · SOLE PROPRIETOR · FORM B"}</p><h1>{tab === "overview" ? `Good morning, ${isCompany ? "Solver" : "Sim"}` : tab === "receipts" ? `${currentAccountLabel} receipts` : tab === "bank" ? "Bank reconciliation" : tab === "myinvois" ? "MyInvois records" : tab === "ledger" ? "General Ledger & Trial Balance" : tab === "pl" ? "Profit & Loss" : tab === "balance" ? "Balance Sheet" : tab === "cashflow" ? "Cash Flow Statement" : tab === "filing" ? `Borang ${currentForm} information checklist` : tab === "audit" ? "Seven-year Audit Pack" : isPersonal ? "Tax-ready summary" : isCompany ? "Form C tax computation" : "Form B tax summary"}</h1></div>
           <div className="header-actions"><div className="language-switch" role="group" aria-label="Language"><Languages /><button className={language === "zh" ? "active" : ""} aria-pressed={language === "zh"} onClick={() => setLanguage("zh")}>中文</button><button className={language === "en" ? "active" : ""} aria-pressed={language === "en"} onClick={() => setLanguage("en")}>EN</button></div><button className="icon-btn" aria-label="Notifications"><Bell /></button><button className="primary" onClick={() => setUploadOpen(true)}><Plus /> Upload receipt</button></div>
         </header>
 
         {tab === "overview" && (
           <div className="content">
             <section className="welcome-panel">
-              <div><span className="pill"><Sparkles /> {entity === "personal" ? "Personal tax relief" : "Business expense capture"}</span><h2>{entity === "personal" ? <>Sim Lip Geap’s personal<br />expenses, kept separate.</> : <>Solver Academy’s business<br />expenses, tax-ready.</>}</h2><p>{entity === "personal" ? "Track personal spending and identify possible Form BE relief records without mixing them into the company account." : "Record expenses incurred to earn business income, document their purpose, and keep personal purchases out."}</p><button className="dark-button" onClick={() => setUploadOpen(true)}><Paperclip /> Upload {entity === "personal" ? "personal" : "business"} receipt</button><small>Saved to {entity === "personal" ? "Sim Lip Geap" : "Solver Academy"}</small></div>
+              <div><span className="pill"><Sparkles /> {isPersonal ? "Personal tax relief" : isCompany ? "Sdn. Bhd. accounting" : "Sole proprietor records"}</span><h2>{isPersonal ? <>Sim Lip Geap’s personal<br />expenses, kept separate.</> : isCompany ? <>Solver Academy’s company<br />accounts, under control.</> : <>Sim Lip Geap’s business<br />expenses for Form B.</>}</h2><p>{isPersonal ? "Track personal spending and identify possible Form BE relief records without mixing them into the company account." : isCompany ? "Turn receipts and journals into a balanced MPERS General Ledger, P&L, Balance Sheet, Cash Flow and Form C working papers." : "Record sole proprietor income and expenses without mixing them into Solver Academy Sdn. Bhd. or ordinary personal spending."}</p><div className="hero-actions"><button className="dark-button" onClick={() => isCompany ? setTab("ledger") : setUploadOpen(true)}>{isCompany ? <BookOpen /> : <Paperclip />} {isPersonal ? "Upload personal receipt" : isCompany ? "Open company accounts" : "Upload Form B receipt"}</button>{isCompany && <button className="secondary" onClick={() => setUploadOpen(true)}><Paperclip /> Upload company receipt</button>}</div><small>Saved to {isCompany ? "Solver Academy Sdn. Bhd." : isPersonal ? "Sim Lip Geap · Personal" : "Sim Lip Geap · Sole proprietor"}</small></div>
               <div className="receipt-stack" aria-hidden="true"><div className="receipt-paper back"></div><div className="receipt-paper front"><div className="receipt-top"><span className="logo-dot">{entity === "personal" ? "K" : "P"}</span><div><b>{entity === "personal" ? "KPJ MEDICAL" : "PETRONAS"}</b><small>{entity === "personal" ? "Personal receipt" : "Business receipt"}</small></div><span className="verified"><Check /></span></div><div className="scan-lines"><i></i><i></i><i></i></div><div className="receipt-total"><span>Total</span><strong>{entity === "personal" ? "RM 180.00" : "RM 120.50"}</strong></div><div className="category-tag">{entity === "personal" ? <HeartPulse /> : <Fuel />} {entity === "personal" ? "Medical" : "Petrol"} <span>{entity === "personal" ? "Form BE" : "80% use"}</span></div></div></div>
             </section>
 
-            <section className="expense-guide"><div className="guide-head"><div><span>{entity === "personal" ? "PERSONAL ACCOUNT" : "BUSINESS ACCOUNT"}</span><h3>{entity === "personal" ? "What Sim Lip Geap can organise" : "What Solver Academy can record"}</h3><p>{entity === "personal" ? "Possible relief evidence is shown separately from ordinary personal spending." : "Only expenses with a genuine business purpose should be considered for deduction."}</p></div><span className={`account-badge ${entity}`}><ShieldCheck /> {entity === "personal" ? "Form BE" : "Form B"}</span></div><div className="guide-grid">{(entity === "personal" ? [
+            <section className="expense-guide"><div className="guide-head"><div><span>{isPersonal ? "PERSONAL ACCOUNT" : isCompany ? "COMPANY ACCOUNT" : "SOLE PROPRIETOR ACCOUNT"}</span><h3>{isPersonal ? "What Sim Lip Geap can organise" : isCompany ? "Solver Academy Sdn. Bhd. accounting" : "Sim Lip Geap · Form B business records"}</h3><p>{isPersonal ? "Possible relief evidence is shown separately from ordinary personal spending." : isCompany ? "Company records flow through double-entry journals before appearing in MPERS reports and Form C." : "Only genuine sole proprietor business records appear in Form B."}</p></div><span className={`account-badge ${entity}`}><ShieldCheck /> Form {currentForm}</span></div><div className="guide-grid">{(isPersonal ? [
               { category: "Medical" as Category, note: "Medical treatment and eligible care" }, { category: "Lifestyle" as Category, note: "Books, devices and eligible lifestyle items" }, { category: "Education" as Category, note: "Eligible self-education fees" }, { category: "Insurance" as Category, note: "Life and medical insurance records" }, { category: "EPF & SOCSO" as Category, note: "Contribution statements" }, { category: "Zakat" as Category, note: "Zakat payment receipts" }
             ] : [
               { category: "Petrol" as Category, note: "Business travel, toll and parking" }, { category: "Stationery" as Category, note: "Office supplies and printing" }, { category: "Mobile" as Category, note: "Business-use phone and internet" }, { category: "Software & Subscriptions" as Category, note: "Cloud tools and business software" }, { category: "Advertising & Marketing" as Category, note: "Ads, design and promotion" }, { category: "Professional Fees" as Category, note: "Accounting, audit and legal services" }
             ]).map((item) => { const Icon = categoryMeta[item.category].icon; return <article key={item.category}><span className={`cat-icon ${categoryMeta[item.category].tone}`}><Icon /></span><div><strong>{item.category}</strong><small>{item.note}</small></div><ChevronRight /></article>; })}</div><p className="guide-disclaimer"><AlertCircle /> Categories are record-keeping suggestions. Final eligibility depends on the relevant YA rules and supporting evidence.</p></section>
 
             <section className="metric-grid">
-              <article><div className="metric-icon mint"><WalletCards /></div><span>Total expenses</span><strong>{currency(totals.total)}</strong><small><b>↑ 12.4%</b> from last month</small></article>
-              <article><div className="metric-icon peach">{entity === "personal" ? <FileCheck2 /> : <BriefcaseBusiness />}</div><span>{entity === "personal" ? "Potential relief records" : "Claimable business use"}</span><strong>{currency(entity === "personal" ? totals.relief : totals.business)}</strong><small>{entity === "personal" ? "Subject to YA limits" : `${Math.round((totals.business / Math.max(totals.total, 1)) * 100)}% of recorded spend`}</small></article>
-              <article><div className="metric-icon lavender"><Gauge /></div><span>Receipts processed</span><strong>{entityReceipts.length}</strong><small>{entity === "personal" ? "Personal account only" : "Business account only"}</small></article>
+              <article><div className="metric-icon mint"><WalletCards /></div><span>Total expenses</span><strong>{currency(totals.total)}</strong><small>{entityReceipts.length ? "Current selected account" : "No receipts recorded yet"}</small></article>
+              <article><div className="metric-icon peach">{isPersonal ? <FileCheck2 /> : <BriefcaseBusiness />}</div><span>{isPersonal ? "Potential relief records" : "Claimable business use"}</span><strong>{currency(isPersonal ? totals.relief : totals.business)}</strong><small>{isPersonal ? "Subject to YA limits" : `${Math.round((totals.business / Math.max(totals.total, 1)) * 100)}% of recorded spend`}</small></article>
+              <article><div className="metric-icon lavender"><Gauge /></div><span>Receipts processed</span><strong>{entityReceipts.length}</strong><small>{isPersonal ? "Personal account only" : isCompany ? "Company account only" : "Sole proprietor only"}</small></article>
               <article className={totals.review ? "needs-review" : ""}><div className="metric-icon yellow"><AlertCircle /></div><span>Needs review</span><strong>{totals.review}</strong><small>Check tax purpose</small></article>
             </section>
 
             <section className="two-column">
-              <div className="panel spending-panel"><div className="panel-head"><div><h3>Spending by category</h3><p>{entity === "personal" ? "Sim Lip Geap · Personal" : "Solver Academy · Business"}</p></div><button>Jul 2026 <ChevronDown /></button></div><div className="category-bars">
-                {(entity === "personal" ? ["Medical", "Lifestyle", "Insurance", "Zakat", "Food & Beverage"] as Category[] : ["Advertising & Marketing", "Petrol", "Mobile", "Software & Subscriptions", "Stationery"] as Category[]).map((category) => {
+              <div className="panel spending-panel"><div className="panel-head"><div><h3>Spending by category</h3><p>{isPersonal ? "Sim Lip Geap · Personal" : isCompany ? "Solver Academy · Sdn. Bhd." : "Sim Lip Geap · Sole proprietor"}</p></div><button>Jul 2026 <ChevronDown /></button></div><div className="category-bars">
+                {(isPersonal ? ["Medical", "Lifestyle", "Insurance", "Zakat", "Food & Beverage"] as Category[] : ["Advertising & Marketing", "Petrol", "Mobile", "Software & Subscriptions", "Stationery"] as Category[]).map((category) => {
                   const amount = entityReceipts.filter((r) => r.category === category).reduce((sum, r) => sum + r.amount, 0);
                   const Icon = categoryMeta[category].icon;
                   return <div className="bar-row" key={category}><span className={`cat-icon ${categoryMeta[category].tone}`}><Icon /></span><div><span>{category}</span><div className="bar"><i style={{ width: `${Math.max(8, Math.min(100, (amount / Math.max(totals.total, 1)) * 180))}%` }}></i></div></div><strong>{currency(amount)}</strong></div>;
                 })}
               </div></div>
-              <div className="panel tax-readiness"><div className="panel-head"><div><h3>Tax readiness</h3><p>Form {entity === "personal" ? "BE" : "B"} · YA 2026</p></div><span className="score">82%</span></div><div className="donut"><div><strong>82%</strong><span>ready</span></div></div><ul><li><span className="dot green"></span><div><b>{entityReceipts.length - totals.review} receipts categorised</b><small>{entity === "personal" ? "Relief and personal spend separated" : "Business records documented"}</small></div><Check /></li><li><span className="dot orange"></span><div><b>{totals.review} receipt needs attention</b><small>{entity === "personal" ? "Relief eligibility not confirmed" : "Business purpose not confirmed"}</small></div><ChevronRight /></li></ul><button className="text-button" onClick={() => setTab("tax")}>Open tax checklist <ArrowUpRight /></button></div>
+              <div className="panel tax-readiness"><div className="panel-head"><div><h3>Tax readiness</h3><p>Form {currentForm} · YA 2026</p></div><span className="score">{filingPercent}%</span></div><div className="donut" style={{ background: `conic-gradient(var(--green) 0 ${filingPercent}%, #edf0ed ${filingPercent}%)` }}><div><strong>{filingPercent}%</strong><span>ready</span></div></div><ul><li><span className="dot green"></span><div><b>{entityReceipts.length - totals.review} receipts categorised</b><small>{isPersonal ? "Relief and personal spend separated" : isCompany ? "Company records documented" : "Sole proprietor records documented"}</small></div><Check /></li><li><span className="dot orange"></span><div><b>{totals.review} receipt needs attention</b><small>{isPersonal ? "Relief eligibility not confirmed" : "Business purpose not confirmed"}</small></div><ChevronRight /></li></ul><button className="text-button" onClick={() => setTab(isCompany ? "ledger" : "tax")}>{isCompany ? "Open General Ledger" : "Open tax checklist"} <ArrowUpRight /></button></div>
             </section>
 
             <ReceiptTable entity={entity} receipts={filtered.slice(0, 5)} query={query} setQuery={setQuery} onViewAll={() => setTab("receipts")} />
@@ -638,11 +715,13 @@ export default function Home() {
 
         {tab === "myinvois" && (
           <div className="content feature-page">
-            <section className="feature-hero myinvois-hero"><div><span className="pill"><ScanLine /> Malaysia e-Invoice</span><h2>Keep receipts and MyInvois together.</h2><p>Import validated e-Invoice records or scan a supplier QR. UUID, supplier TIN and supporting receipt stay linked for your tax agent.</p><div className="hero-actions"><label className="dark-button file-button"><FileUp /> Import MyInvois file<input type="file" accept=".csv,.json,application/json,text/csv" onChange={(e) => { if (e.target.files?.[0]) { setToast("MyInvois file checked and imported."); setTimeout(() => setToast(""), 3200); } }} /></label><button className="secondary" onClick={() => setToast("QR scanner is ready for a supported camera device.")}><ScanLine /> Scan QR</button></div></div><div className="einvoice-card"><span className="einvoice-brand">MY<span>INVOIS</span></span><div className="qr-placeholder"><ScanLine /></div><small>VALIDATED</small><strong>EI-98F2-71A0</strong><p>PETRONAS Station · RM 120.50</p><span className="verified-line"><Check /> Receipt linked</span></div></section>
-            <section className="integration-grid"><article className="panel"><span className="mini-icon green"><BadgeCheck /></span><div><h3>2 validated documents</h3><p>UUID and supplier details recorded</p></div></article><article className="panel"><span className="mini-icon yellow"><AlertCircle /></span><div><h3>4 receipts without UUID</h3><p>Normal receipt or exempt supplier</p></div></article><article className="panel"><span className="mini-icon violet"><ShieldCheck /></span><div><h3>Duplicate protection</h3><p>No duplicate UUID detected</p></div></article></section>
-            <section className="panel data-panel"><div className="panel-head"><div><h3>e-Invoice register</h3><p>Imported and linked supplier documents</p></div><a href="https://mytax.hasil.gov.my" target="_blank" rel="noreferrer" className="text-button">Open MyTax <ArrowUpRight /></a></div><div className="einvoice-list"><div><span className="cat-icon green"><Fuel /></span><p><b>PETRONAS Station</b><small>TIN C25845678010 · 28 Jul 2026</small></p><code>EI-98F2-71A0</code><strong>RM 120.50</strong><span className="status-ready"><Check /> Linked</span></div><div><span className="cat-icon green"><Phone /></span><p><b>Maxis Berhad</b><small>TIN C19874432100 · 25 Jul 2026</small></p><code>EI-44B1-901D</code><strong>RM 128.00</strong><span className="status-ready"><Check /> Linked</span></div></div></section>
+            <section className="feature-hero myinvois-hero"><div><span className="pill"><ScanLine /> Malaysia e-Invoice</span><h2>Keep receipts and MyInvois together.</h2><p>{currentName} · {currentAccountLabel}. Imported UUID records remain inside this selected account.</p><div className="hero-actions"><label className="dark-button file-button"><FileUp /> Import MyInvois file<input type="file" accept=".csv,.json,application/json,text/csv" onChange={(e) => { if (e.target.files?.[0]) { setToast("MyInvois file checked and imported."); setTimeout(() => setToast(""), 3200); } }} /></label><button className="secondary" onClick={() => setToast("QR scanner is ready for a supported camera device.")}><ScanLine /> Scan QR</button></div></div><div className="einvoice-card"><span className="einvoice-brand">MY<span>INVOIS</span></span><div className="qr-placeholder"><ScanLine /></div><small>{entityInvoices.length ? "VALIDATED" : "AWAITING IMPORT"}</small><strong>{entityInvoices[0]?.myInvoisUuid || "No UUID yet"}</strong><p>{entityInvoices[0] ? `${entityInvoices[0].merchant} · ${currency(entityInvoices[0].amount)}` : `${currentName} · ${currentAccountLabel}`}</p><span className="verified-line">{entityInvoices.length ? <Check /> : <AlertCircle />}{entityInvoices.length ? "Receipt linked" : "Import a MyInvois file"}</span></div></section>
+            <section className="integration-grid"><article className="panel"><span className="mini-icon green"><BadgeCheck /></span><div><h3>{entityInvoices.length} validated documents</h3><p>UUID references recorded</p></div></article><article className="panel"><span className="mini-icon yellow"><AlertCircle /></span><div><h3>{entityReceipts.length - entityInvoices.length} receipts without UUID</h3><p>Normal receipt or exempt supplier</p></div></article><article className="panel"><span className="mini-icon violet"><ShieldCheck /></span><div><h3>Account isolation</h3><p>No records from another taxpayer appear here</p></div></article></section>
+            <section className="panel data-panel"><div className="panel-head"><div><h3>e-Invoice register</h3><p>{currentName} · {currentAccountLabel}</p></div><a href="https://mytax.hasil.gov.my" target="_blank" rel="noreferrer" className="text-button">Open MyTax <ArrowUpRight /></a></div><div className="einvoice-list">{entityInvoices.map((receipt) => { const Icon = categoryMeta[receipt.category].icon; return <div key={receipt.id}><span className="cat-icon green"><Icon /></span><p><b>{receipt.merchant}</b><small>{receipt.date} · {receipt.category}</small></p><code>{receipt.myInvoisUuid}</code><strong>{currency(receipt.amount)}</strong><span className="status-ready"><Check /> Linked</span></div>; })}{!entityInvoices.length && <div className="empty-invoices"><ScanLine /><p><b>No MyInvois records in this account</b><small>Import a validated file or add a UUID to a receipt.</small></p></div>}</div></section>
           </div>
         )}
+
+        {isCompany && (["ledger", "pl", "balance", "cashflow", "tax"] as string[]).includes(tab) && <CompanyAccounting view={tab as CompanyAccountingView} receipts={companyAccountingReceipts} onToast={(message) => { setToast(message); setTimeout(() => setToast(""), 3600); }} />}
 
         {tab === "filing" && (
           <div className="content filing-page">
@@ -650,14 +729,15 @@ export default function Home() {
               <div>
                 <span className="pill"><ClipboardCheck /> YA 2026 preparation</span>
                 <h2>Borang {activeForm} information, all in one place.</h2>
-                <p>{entity === "personal" ? "Collect Sim Lip Geap’s employment income, other non-business income, relief, rebate and tax-payment records before filing." : "Collect Solver Academy’s business accounts, tax adjustments, other income, personal relief and instalment records before filing."}</p>
+                <p>{isPersonal ? "Collect Sim Lip Geap’s employment income, other non-business income, relief, rebate and tax-payment records before filing." : isCompany ? "Prepare Solver Academy Sdn. Bhd.’s MPERS financial statements, tax computation, CP204 records, Form C and MITRS documents." : "Prepare Sim Lip Geap’s sole proprietor P&L, tax adjustments, CP500 payments, personal reliefs and Borang B records."}</p>
                 <div className="hero-actions"><button className="dark-button" onClick={saveFilingChecklist} disabled={savingChecklist}>{savingChecklist ? <LoaderCircle className="spinner-inline" /> : <Save />} {savingChecklist ? "Saving…" : "Save checklist"}</button><a className="secondary filing-link" href="https://mytax.hasil.gov.my" target="_blank" rel="noreferrer">Open MyTax <ArrowUpRight /></a></div>
               </div>
               <div className="filing-score-ring" style={{ "--filing-progress": `${filingPercent}%` } as CSSProperties}><div><strong>{filingPercent}%</strong><span>information ready</span></div></div>
             </section>
 
-            {entity === "business" && <section className="legal-warning"><AlertCircle /><div><strong>First confirm Solver Academy’s legal type</strong><p>Borang B is for a resident individual carrying on a business, including a sole proprietor. If Solver Academy is a Sdn. Bhd., it generally files Borang C instead — do not combine the company return with Sim Lip Geap’s personal Borang B.</p></div></section>}
-            <section className="auto-calc-note"><CircleDollarSign /><div><strong>Receipt-linked amounts update automatically</strong><p>Only receipts marked as Business or Relief flow into matching fields. Business amounts use the confirmed business-use percentage. Annual relief limits are not applied automatically, so review the final claim before filing.</p></div></section>
+            {isCompany && <section className="legal-warning confirmed"><ShieldCheck /><div><strong>Legal entity confirmed: Solver Academy Sdn. Bhd.</strong><p>This company workspace uses Borang C and MPERS. It is completely separated from Sim Lip Geap’s personal Borang BE and sole proprietor Borang B records.</p></div></section>}
+            {entity === "business" && <section className="legal-warning confirmed"><ShieldCheck /><div><strong>Legal entity confirmed: individual sole proprietor</strong><p>This workspace uses Borang B and remains separate from Solver Academy Sdn. Bhd.’s Borang C accounts.</p></div></section>}
+            <section className="auto-calc-note"><CircleDollarSign /><div><strong>{isCompany ? "Company receipts create draft journals" : "Receipt-linked amounts update automatically"}</strong><p>{isPersonal ? "Only receipts marked as Relief flow into matching fields. Annual relief limits are not applied automatically, so review the final claim before filing." : isCompany ? "A company receipt affects P&L, Balance Sheet, Cash Flow and Form C only after its balanced journal and business purpose are confirmed and posted." : "Only receipts confirmed as sole proprietor business use flow into Form B amounts, using the confirmed business-use percentage."}</p></div></section>
 
             <section className="filing-summary">
               <article><span className="mini-icon green"><ClipboardCheck /></span><div><small>Completed</small><strong>{filingDone} / {filingItems.length}</strong></div></article>
@@ -702,24 +782,33 @@ export default function Home() {
               })}
             </div>
 
-            <section className="filing-source-note"><ShieldCheck /><div><strong>Prepared from the latest available HASiL YA 2025 guidance</strong><p>Use this as a preparation checklist. Recheck eligibility, relief limits and the final YA 2026 form when HASiL releases it. AMS organises records and does not replace a licensed tax agent.</p></div><a href="https://www.hasil.gov.my/borang/muat-turun-borang/muat-turun-borang-individu/" target="_blank" rel="noreferrer">Official forms <ArrowUpRight /></a></section>
+            <section className="filing-source-note"><ShieldCheck /><div><strong>{isCompany ? "Company rules linked to official HASiL Form C, CP204 and MITRS sources" : "YA 2026 preparation using the latest official HASiL sources"}</strong><p>{isCompany ? "This is a preparation checklist. Confirm final tax rates, incentives, capital allowance classes and filing positions before submission." : "Recheck eligibility, limits and the final YA 2026 form when HASiL releases it."} AMS organises records and does not replace a licensed tax agent.</p></div><a href={isCompany ? "https://www.hasil.gov.my/en/company/corporate-tax/" : "https://www.hasil.gov.my/en/individual/individual-life-cycle/income-declaration/"} target="_blank" rel="noreferrer">Official HASiL source <ArrowUpRight /></a></section>
           </div>
         )}
 
-        {tab === "tax" && (
+        {tab === "tax" && entity === "business" && (
           <div className="content tax-page">
-            <div className="tax-switch"><button className={entity === "business" ? "active" : "locked"} disabled={entity !== "business"}>Form B <small>{entity === "business" ? "Solver Academy · selected" : "Switch to Solver Academy"}</small></button><button className={entity === "personal" ? "active" : "locked"} disabled={entity !== "personal"}>Form BE <small>{entity === "personal" ? "Sim Lip Geap · selected" : "Switch to Sim Lip Geap"}</small></button></div>
-            <section className="form-warning"><ShieldCheck /><div><strong>{activeForm === "B" ? "You selected Form B" : "You selected Form BE"}</strong><p>{activeForm === "B" ? "Business expenses and personal reliefs are kept separate." : "Business deductions are excluded. Only eligible personal relief records appear below."}</p></div></section>
-            <section className="report-hero"><div><span className="pill"><FileCheck2 /> YA 2026 estimate</span><h2>{activeForm === "B" ? "Your business records are 82% tax-ready." : "Your personal relief records are organised."}</h2><p>{activeForm === "B" ? "Claimable figures reflect the confirmed business-use percentage, not the full receipt value." : "Relief limits can change by year. Confirm the final YA 2026 eligibility and limits before filing."}</p></div><button className="dark-button" onClick={exportCsv}><Download /> Export summary</button></section>
-            {activeForm === "B" ? <section className="report-grid"><div className="panel"><div className="panel-head"><div><h3>Solver Academy · Potential deductions</h3><p>Adjusted for confirmed business-use percentage</p></div><strong>{currency(totals.business)}</strong></div>{Object.entries(categoryMeta).map(([category, meta]) => { const items = entityReceipts.filter((r) => r.category === category && r.taxUse === "Business"); const amount = items.reduce((sum, r) => r.amount * r.businessUse / 100 + sum, 0); if (!amount) return null; const Icon = meta.icon; return <div className="deduction-row" key={category}><span className={`cat-icon ${meta.tone}`}><Icon /></span><div><b>{category}</b><small>{items.length} receipt{items.length > 1 ? "s" : ""} · business-use adjusted</small></div><strong>{currency(amount)}</strong><span className="status-ready"><Check /> Ready</span></div>; })}</div><aside className="panel filing-note"><span className="mini-icon"><AlertCircle /></span><h3>Before you file</h3><p>AMS organises evidence; it does not decide whether an expense is legally deductible.</p><ol><li>Confirm every business purpose</li><li>Review mixed-use percentages</li><li>Ask a licensed tax agent about uncertain claims</li></ol><button className="text-button" onClick={() => setTab("audit")}>Prepare Audit Pack <ArrowUpRight /></button></aside></section> : <section className="report-grid"><div className="panel relief-panel"><div className="panel-head"><div><h3>Sim Lip Geap · Personal relief records</h3><p>Potential Form BE evidence · not business expenses</p></div><strong>{currency(totals.relief)}</strong></div>{(["Medical", "Lifestyle", "Education", "Insurance", "EPF & SOCSO", "Zakat"] as Category[]).map((category) => { const items = entityReceipts.filter((r) => r.category === category && r.taxUse === "Relief"); const amount = items.reduce((sum, r) => sum + r.amount, 0); const Icon = categoryMeta[category].icon; return <div className="relief-row" key={category}><span className={`cat-icon ${categoryMeta[category].tone}`}><Icon /></span><div><b>{category}</b><small>{items.length ? `${items.length} supporting record${items.length > 1 ? "s" : ""}` : "No record uploaded"}</small></div><strong>{currency(amount)}</strong><span className={items.length ? "status-ready" : "review-chip"}>{items.length ? <Check /> : <AlertCircle />}{items.length ? "Recorded" : "Add record"}</span></div>; })}</div><aside className="panel filing-note"><span className="mini-icon"><ShieldCheck /></span><h3>Form BE protection</h3><p>Solver Academy’s business expenses are completely hidden from Sim Lip Geap’s personal account.</p><ol><li>Confirm employment-only filing status</li><li>Review annual relief limits</li><li>Keep supporting documents for seven years</li></ol></aside></section>}
+            <div className="tax-switch"><button className="active">Form B <small>Sim Lip Geap · sole proprietor</small></button></div>
+            <section className="form-warning"><ShieldCheck /><div><strong>You selected Form B</strong><p>This return belongs to Sim Lip Geap as an individual carrying on business. Solver Academy Sdn. Bhd. is excluded.</p></div></section>
+            <section className="report-hero"><div><span className="pill"><FileCheck2 /> YA 2026 preparation</span><h2>Sole proprietor records, kept separate.</h2><p>Claimable figures use the confirmed business-use percentage. Final deductibility and YA rules still require review.</p></div><button className="dark-button" onClick={exportCsv}><Download /> Export Form B summary</button></section>
+            <section className="report-grid"><div className="panel"><div className="panel-head"><div><h3>Sim Lip Geap · Potential business deductions</h3><p>Sole proprietor receipts only</p></div><strong>{currency(totals.business)}</strong></div>{Object.entries(categoryMeta).map(([category, meta]) => { const items = entityReceipts.filter((receipt) => receipt.category === category && receipt.taxUse === "Business"); const amount = items.reduce((sum, receipt) => sum + receipt.amount * receipt.businessUse / 100, 0); if (!amount) return null; const Icon = meta.icon; return <div className="deduction-row" key={category}><span className={`cat-icon ${meta.tone}`}><Icon /></span><div><b>{category}</b><small>{items.length} receipt{items.length > 1 ? "s" : ""} · business-use adjusted</small></div><strong>{currency(amount)}</strong><span className="status-ready"><Check /> Recorded</span></div>; })}{!entityReceipts.length && <div className="empty-business"><BriefcaseBusiness /><h3>No sole proprietor receipts yet</h3><p>Upload a Form B business receipt to begin the separate expense register.</p><button className="primary" onClick={() => setUploadOpen(true)}><Plus /> Upload Form B receipt</button></div>}</div><aside className="panel filing-note"><span className="mini-icon"><AlertCircle /></span><h3>Before e-B filing</h3><p>Form B combines the individual’s business income with other personal income, reliefs, rebates and CP500 payments.</p><ol><li>Confirm every business purpose</li><li>Review private-use adjustments</li><li>Keep records for seven years</li></ol><button className="text-button" onClick={() => setTab("filing")}>Open Form B checklist <ArrowUpRight /></button></aside></section>
+          </div>
+        )}
+
+        {tab === "tax" && entity === "personal" && (
+          <div className="content tax-page">
+            <div className="tax-switch"><button className="active">Form BE <small>Sim Lip Geap · selected</small></button></div>
+            <section className="form-warning"><ShieldCheck /><div><strong>You selected Form BE</strong><p>Solver Academy Sdn. Bhd. records are excluded. Only personal income, rebates and eligible relief evidence appear here.</p></div></section>
+            <section className="report-hero"><div><span className="pill"><FileCheck2 /> YA 2026 preparation</span><h2>Your personal relief records are organised.</h2><p>Relief limits can change by year. Confirm final YA 2026 eligibility and limits after HASiL publishes the official rules.</p></div><button className="dark-button" onClick={exportCsv}><Download /> Export summary</button></section>
+            <section className="report-grid"><div className="panel relief-panel"><div className="panel-head"><div><h3>Sim Lip Geap · Personal relief records</h3><p>Potential Form BE evidence · not company expenses</p></div><strong>{currency(totals.relief)}</strong></div>{(["Medical", "Lifestyle", "Education", "Insurance", "EPF & SOCSO", "Zakat"] as Category[]).map((category) => { const items = entityReceipts.filter((r) => r.category === category && r.taxUse === "Relief"); const amount = items.reduce((sum, r) => sum + r.amount, 0); const Icon = categoryMeta[category].icon; return <div className="relief-row" key={category}><span className={`cat-icon ${categoryMeta[category].tone}`}><Icon /></span><div><b>{category}</b><small>{items.length ? `${items.length} supporting record${items.length > 1 ? "s" : ""}` : "No record uploaded"}</small></div><strong>{currency(amount)}</strong><span className={items.length ? "status-ready" : "review-chip"}>{items.length ? <Check /> : <AlertCircle />}{items.length ? "Recorded" : "Add record"}</span></div>; })}</div><aside className="panel filing-note"><span className="mini-icon"><ShieldCheck /></span><h3>Form BE protection</h3><p>Solver Academy Sdn. Bhd.’s General Ledger and Form C records are completely hidden from Sim Lip Geap’s personal account.</p><ol><li>Confirm employment-only filing status</li><li>Review annual relief limits</li><li>Keep supporting documents for seven years</li></ol></aside></section>
           </div>
         )}
 
         {tab === "audit" && (
           <div className="content feature-page">
             <section className="feature-hero audit-hero"><div><span className="pill"><Archive /> LHDN record support</span><h2>One evidence pack. Seven-year-ready.</h2><p>Bundle your receipt register, business purpose, bank matching and MyInvois references for your accountant or future review.</p><button className="dark-button" onClick={downloadAuditPack}><Download /> Download Audit Pack</button></div><div className="archive-visual"><Archive /><strong>YA 2026</strong><span>Retention target</span><b>31 Dec 2033</b></div></section>
-            <section className="audit-grid"><article className="panel"><span className="check-circle"><Check /></span><h3>{entity === "personal" ? "Sim Lip Geap" : "Solver Academy"} register</h3><p>{entityReceipts.length} records with categories and source-file references.</p></article><article className="panel"><span className="check-circle"><Check /></span><h3>{entity === "personal" ? "Relief evidence" : "Business purpose"}</h3><p>{entityReceipts.filter((r) => r.businessPurpose).length} records documented; {entityReceipts.filter((r) => r.taxUse === "Review").length} needs review.</p></article><article className="panel"><span className="check-circle"><Check /></span><h3>{entity === "personal" ? "Personal-only account" : "Bank reconciliation"}</h3><p>{entity === "personal" ? "No Solver Academy expenses included." : "3 matched transactions and 1 missing receipt."}</p></article><article className="panel"><span className="check-circle"><Check /></span><h3>{entity === "personal" ? "Form BE register" : "MyInvois register"}</h3><p>{entity === "personal" ? `${entityReceipts.filter((r) => r.taxUse === "Relief").length} potential relief records.` : "2 validated UUID references linked to receipts."}</p></article></section>
-            <section className="panel retention"><ShieldCheck /><div><h3>Retention reminder is active</h3><p>AMS will keep the YA 2026 workspace organised through 31 December 2033. Export a copy for your own records and tax agent.</p></div><span className="safe-chip">7 years</span></section>
+            <section className="audit-grid"><article className="panel"><span className="check-circle"><Check /></span><h3>{isCompany ? "Solver Academy Sdn. Bhd." : "Sim Lip Geap"} register</h3><p>{entityReceipts.length} records with categories and source-file references.</p></article><article className="panel"><span className="check-circle"><Check /></span><h3>{isPersonal ? "Relief evidence" : "Business purpose"}</h3><p>{entityReceipts.filter((r) => r.businessPurpose).length} records documented; {entityReceipts.filter((r) => r.taxUse === "Review").length} needs review.</p></article><article className="panel"><span className="check-circle"><Check /></span><h3>{isPersonal ? "Personal-only account" : "Bank reconciliation"}</h3><p>{isPersonal ? "No business or company expenses included." : `${bankRows.filter((row) => row.status === "Matched").length} matched transactions and ${bankRows.filter((row) => row.status !== "Matched").length} missing receipts.`}</p></article><article className="panel"><span className="check-circle"><Check /></span><h3>{isPersonal ? "Form BE register" : isCompany ? "Form C and MyInvois register" : "Form B register"}</h3><p>{isPersonal ? `${entityReceipts.filter((r) => r.taxUse === "Relief").length} potential relief records.` : isCompany ? "Company accounting and validated UUID references are included." : "Sole proprietor records stay separate from the Sdn. Bhd."}</p></article></section>
+            <section className="panel retention"><ShieldCheck /><div><h3>Retention reminder is active</h3><p>Keep the YA 2026 records through the applicable seven-year period. Browser-only data is not a guaranteed backup, so export a copy for your own secure storage and tax agent.</p></div><span className="safe-chip">7 years</span></section>
           </div>
         )}
       </section>
@@ -732,11 +821,14 @@ export default function Home() {
 }
 
 function ReceiptTable({ entity, receipts, query, setQuery, onViewAll, full = false }: { entity: Entity; receipts: Receipt[]; query: string; setQuery: (v: string) => void; onViewAll: () => void; full?: boolean }) {
-  return <section className="panel receipt-list"><div className="panel-head"><div><h3>{full ? `${entity === "personal" ? "Sim Lip Geap" : "Solver Academy"} receipts` : "Recent receipts"}</h3><p>{full ? `Only ${entity === "personal" ? "personal" : "business"} records are shown` : "Automatically extracted and categorised"}</p></div><div className="table-actions">{full && <label className="search"><Search /><input value={query} onChange={(e) => setQuery(e.target.value)} placeholder="Search receipts" /></label>}<button className="text-button" onClick={onViewAll}>{full ? "Add receipt" : "View all"} <ArrowUpRight /></button></div></div><div className="table-wrap"><table><thead><tr><th>Merchant</th><th>Date</th><th>Category</th><th>Tax use</th><th>{entity === "personal" ? "Account" : "Business use"}</th><th>{entity === "personal" ? "Amount" : "Claimable"}</th><th></th></tr></thead><tbody>{receipts.map((receipt) => { const Icon = categoryMeta[receipt.category].icon; return <tr key={receipt.id}><td><div className="merchant"><span className={`cat-icon ${categoryMeta[receipt.category].tone}`}><Icon /></span><div><b>{receipt.merchant}</b><small>{receipt.myInvoisUuid ? `MyInvois ${receipt.myInvoisUuid}` : `${receipt.confidence}% category match`}</small></div></div></td><td>{receipt.date}</td><td><span className="category-label">{receipt.category}</span></td><td><span className={`tax-use ${receipt.taxUse.toLowerCase()}`}>{receipt.taxUse === "Review" ? <AlertCircle /> : receipt.taxUse === "Relief" ? <FileCheck2 /> : null}{receipt.taxUse}</span></td><td>{entity === "personal" ? "Personal" : receipt.taxUse === "Business" ? `${receipt.businessUse}%` : "—"}</td><td><strong>{currency(receipt.taxUse === "Business" ? receipt.amount * receipt.businessUse / 100 : receipt.amount)}</strong>{entity === "business" && <small className="gross-amount">gross {currency(receipt.amount)}</small>}</td><td><button className="more" aria-label={`Actions for ${receipt.merchant}`}><MoreHorizontal /></button></td></tr>; })}</tbody></table></div></section>;
+  const accountName = entity === "company" ? "Solver Academy" : "Sim Lip Geap";
+  const accountKind = entity === "personal" ? "personal" : entity === "company" ? "company" : "sole proprietor";
+  return <section className="panel receipt-list"><div className="panel-head"><div><h3>{full ? `${accountName} receipts` : "Recent receipts"}</h3><p>{full ? `Only ${accountKind} records are shown` : "Automatically extracted and categorised"}</p></div><div className="table-actions">{full && <label className="search"><Search /><input value={query} onChange={(e) => setQuery(e.target.value)} placeholder="Search receipts" /></label>}<button className="text-button" onClick={onViewAll}>{full ? "Add receipt" : "View all"} <ArrowUpRight /></button></div></div><div className="table-wrap"><table><thead><tr><th>Merchant</th><th>Date</th><th>Category</th><th>Tax use</th><th>{entity === "personal" ? "Account" : "Business use"}</th><th>{entity === "personal" ? "Amount" : "Claimable"}</th><th></th></tr></thead><tbody>{receipts.map((receipt) => { const Icon = categoryMeta[receipt.category].icon; return <tr key={receipt.id}><td><div className="merchant"><span className={`cat-icon ${categoryMeta[receipt.category].tone}`}><Icon /></span><div><b>{receipt.merchant}</b><small>{receipt.myInvoisUuid ? `MyInvois ${receipt.myInvoisUuid}` : `${receipt.confidence}% category match`}</small></div></div></td><td>{receipt.date}</td><td><span className="category-label">{receipt.category}</span></td><td><span className={`tax-use ${receipt.taxUse.toLowerCase()}`}>{receipt.taxUse === "Review" ? <AlertCircle /> : receipt.taxUse === "Relief" ? <FileCheck2 /> : null}{receipt.taxUse}</span></td><td>{entity === "personal" ? "Personal" : receipt.taxUse === "Business" ? `${receipt.businessUse}%` : "—"}</td><td><strong>{currency(receipt.taxUse === "Business" ? receipt.amount * receipt.businessUse / 100 : receipt.amount)}</strong>{entity !== "personal" && <small className="gross-amount">gross {currency(receipt.amount)}</small>}</td><td><button className="more" aria-label={`Actions for ${receipt.merchant}`}><MoreHorizontal /></button></td></tr>; })}</tbody></table></div></section>;
 }
 
 function UploadModal({ draft, setDraft, processing, progress, fileRef, onFile, onClose, onSave }: { draft: Receipt | null; setDraft: (r: Receipt) => void; processing: boolean; progress: number; fileRef: React.RefObject<HTMLInputElement | null>; onFile: (f: File) => void; onClose: () => void; onSave: (e: FormEvent) => void }) {
   const personalCategories: Category[] = ["Medical", "Lifestyle", "Education", "Insurance", "EPF & SOCSO", "Zakat", "Food & Beverage", "Entertainment", "Mobile", "Others"];
   const businessCategories: Category[] = ["Food & Beverage", "Stationery", "Petrol", "Toll Fee", "Mobile", "Entertainment", "Office Rent", "Software & Subscriptions", "Professional Fees", "Advertising & Marketing", "Utilities", "Others"];
-  return <div className="modal-backdrop" role="dialog" aria-modal="true" aria-labelledby="upload-title"><div className="modal"><div className="modal-head"><div><span className="pill"><Sparkles /> {draft?.entity === "personal" ? "Sim Lip Geap · Personal" : "Solver Academy · Business"}</span><h2 id="upload-title">Upload a receipt</h2><p>This receipt will stay inside the selected account.</p></div><button className="icon-btn" onClick={onClose} aria-label="Close"><X /></button></div>{!draft ? <button className={`dropzone ${processing ? "processing" : ""}`} disabled={processing} onClick={() => fileRef.current?.click()} onDragOver={(e) => e.preventDefault()} onDrop={(e) => { e.preventDefault(); const file = e.dataTransfer.files[0]; if (file) onFile(file); }}><input ref={fileRef} type="file" accept="image/png,image/jpeg,image/webp" hidden onChange={(e) => e.target.files?.[0] && onFile(e.target.files[0])} />{processing ? <><LoaderCircle className="spinner" /><strong>Reading your receipt…</strong><span>Extracting merchant, amount and category</span><div className="progress"><i style={{ width: `${progress}%` }}></i></div><small>{progress}% complete</small></> : <><span className="upload-icon"><Paperclip /></span><strong>Drop your receipt here</strong><span>or click to choose a photo</span><small>JPG, PNG or WEBP · up to 10 MB</small></>}</button> : <form onSubmit={onSave} className="receipt-form"><div className="detected"><span><Check /></span><div><strong>{draft.entity === "personal" ? "Personal account detected" : "Business account detected"}</strong><small>{draft.confidence}% category confidence · Please confirm</small></div></div><label>Merchant<input value={draft.merchant} onChange={(e) => setDraft({ ...draft, merchant: e.target.value })} required /></label><div className="form-row"><label>Amount (RM)<input type="number" step="0.01" min="0" value={draft.amount} onChange={(e) => setDraft({ ...draft, amount: Number(e.target.value) })} required /></label><label>Category<select value={draft.category} onChange={(e) => setDraft({ ...draft, category: e.target.value as Category })}>{(draft.entity === "personal" ? personalCategories : businessCategories).map((category) => <option key={category}>{category}</option>)}</select></label></div><label>Tax treatment<div className={`segmented ${draft.entity === "personal" ? "" : "four"}`}>{(draft.entity === "personal" ? ["Relief", "Personal", "Review"] as const : ["Business", "Personal", "Review"] as const).map((value) => <button type="button" className={draft.taxUse === value ? "active" : ""} onClick={() => setDraft({ ...draft, taxUse: value, businessUse: value === "Business" ? Math.max(draft.businessUse, 1) : 0 })} key={value}>{value}</button>)}</div></label>{draft.taxUse === "Business" && <><div className="form-row"><label>Business use<input type="range" min="0" max="100" value={draft.businessUse} onChange={(e) => setDraft({ ...draft, businessUse: Number(e.target.value) })} /><span className="range-value">{draft.businessUse}% · claimable {currency(draft.amount * draft.businessUse / 100)}</span></label><label>MyInvois UUID (optional)<input value={draft.myInvoisUuid || ""} onChange={(e) => setDraft({ ...draft, myInvoisUuid: e.target.value })} placeholder="e.g. EI-XXXX-XXXX" /></label></div><label>Business purpose<input value={draft.businessPurpose || ""} onChange={(e) => setDraft({ ...draft, businessPurpose: e.target.value })} placeholder="e.g. Client visit in Petaling Jaya" /></label></>}<div className="modal-actions"><button type="button" className="secondary" onClick={onClose}>Cancel</button><button className="primary" type="submit"><Check /> Save to {draft.entity === "personal" ? "Sim Lip Geap" : "Solver Academy"}</button></div></form>}</div></div>;
+  const draftAccount = draft?.entity === "personal" ? "Sim Lip Geap · Personal" : draft?.entity === "company" ? "Solver Academy · Sdn. Bhd." : "Sim Lip Geap · Sole proprietor";
+  return <div className="modal-backdrop" role="dialog" aria-modal="true" aria-labelledby="upload-title"><div className="modal"><div className="modal-head"><div><span className="pill"><Sparkles /> {draftAccount}</span><h2 id="upload-title">Upload a receipt</h2><p>This receipt will stay inside the selected account.</p></div><button className="icon-btn" onClick={onClose} aria-label="Close"><X /></button></div>{!draft ? <button className={`dropzone ${processing ? "processing" : ""}`} disabled={processing} onClick={() => fileRef.current?.click()} onDragOver={(e) => e.preventDefault()} onDrop={(e) => { e.preventDefault(); const file = e.dataTransfer.files[0]; if (file) onFile(file); }}><input ref={fileRef} type="file" accept="image/png,image/jpeg,image/webp" hidden onChange={(e) => e.target.files?.[0] && onFile(e.target.files[0])} />{processing ? <><LoaderCircle className="spinner" /><strong>Reading your receipt…</strong><span>Extracting merchant, amount and category</span><div className="progress"><i style={{ width: `${progress}%` }}></i></div><small>{progress}% complete</small></> : <><span className="upload-icon"><Paperclip /></span><strong>Drop your receipt here</strong><span>or click to choose a photo</span><small>JPG, PNG or WEBP · up to 10 MB</small></>}</button> : <form onSubmit={onSave} className="receipt-form"><div className="detected"><span><Check /></span><div><strong>{draft.entity === "personal" ? "Personal account detected" : draft.entity === "company" ? "Sdn. Bhd. account detected" : "Sole proprietor account detected"}</strong><small>{draft.confidence}% category confidence · Please confirm</small></div></div><label>Merchant<input value={draft.merchant} onChange={(e) => setDraft({ ...draft, merchant: e.target.value })} required /></label><div className="form-row"><label>Amount (RM)<input type="number" step="0.01" min="0" value={draft.amount} onChange={(e) => setDraft({ ...draft, amount: Number(e.target.value) })} required /></label><label>Category<select value={draft.category} onChange={(e) => setDraft({ ...draft, category: e.target.value as Category })}>{(draft.entity === "personal" ? personalCategories : businessCategories).map((category) => <option key={category}>{category}</option>)}</select></label></div><label>Tax treatment<div className={`segmented ${draft.entity === "personal" ? "" : "four"}`}>{(draft.entity === "personal" ? ["Relief", "Personal", "Review"] as const : ["Business", "Personal", "Review"] as const).map((value) => <button type="button" className={draft.taxUse === value ? "active" : ""} onClick={() => setDraft({ ...draft, taxUse: value, businessUse: value === "Business" ? Math.max(draft.businessUse, 1) : 0 })} key={value}>{value}</button>)}</div></label>{draft.taxUse === "Business" && <><div className="form-row"><label>Business use<input type="range" min="0" max="100" value={draft.businessUse} onChange={(e) => setDraft({ ...draft, businessUse: Number(e.target.value) })} /><span className="range-value">{draft.businessUse}% · claimable {currency(draft.amount * draft.businessUse / 100)}</span></label><label>MyInvois UUID (optional)<input value={draft.myInvoisUuid || ""} onChange={(e) => setDraft({ ...draft, myInvoisUuid: e.target.value })} placeholder="e.g. EI-XXXX-XXXX" /></label></div><label>Business purpose<input value={draft.businessPurpose || ""} onChange={(e) => setDraft({ ...draft, businessPurpose: e.target.value })} placeholder="e.g. Client visit in Petaling Jaya" /></label></>}<div className="modal-actions"><button type="button" className="secondary" onClick={onClose}>Cancel</button><button className="primary" type="submit"><Check /> Save to {draftAccount}</button></div></form>}</div></div>;
 }
