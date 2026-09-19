@@ -81,3 +81,29 @@ header{background:rgba(249,252,255,.88)}.icon-btn{border-color:var(--line);color
 @media(max-width:1100px){.mitrs-grid{grid-template-columns:1fr 1fr}.balance-columns{grid-template-columns:1fr}.statement-row{grid-template-columns:minmax(180px,1fr) 120px 120px}}
 @media(max-width:800px){.financial-grid{grid-template-columns:1fr}.statement-kpis,.cashflow-summary{grid-template-columns:1fr}.ledger-balance-card{display:none}.company-context{align-items:flex-start}.source-chip{display:none}.mitrs-grid{grid-template-columns:1fr}.journal-line{grid-template-columns:1fr 1fr}.journal-line.header{display:none}.remove-line{grid-column:2;margin-left:auto}.journal-total{grid-template-columns:1fr 1fr}.equation-strip{grid-template-columns:1fr}.equation-strip>b{display:none}.statement-hero{display:block;padding:26px 22px}.statement-hero .dark-button,.statement-hero .balance-badge{margin-top:18px}.cash-reconciliation{grid-template-columns:1fr}}
 .entity-avatar.soleprop{background:#f4eadf;color:#8b633f}.account-badge.company{background:#e1f2ff;color:#236fa8}.account-badge.business{background:#f4eadf;color:#8b633f}.empty-business{padding:38px 20px;text-align:center}.empty-business>svg{width:30px;height:30px;color:var(--green)}.empty-business h3{font:600 18px Georgia,serif;margin:12px 0 6px}.empty-business p{font-size:9px;color:var(--muted);margin:0 0 16px}.empty-invoices{grid-template-columns:34px 1fr!important}.empty-invoices>svg{width:22px;color:var(--muted)}
+
+/* Stamp duty working papers and evidence register */
+.sidebar nav{min-height:0;overflow-y:auto}
+.stamp-page{padding-top:22px}
+.stamp-hero-note{width:220px;min-width:220px;padding:21px;border-radius:14px;background:#fff;box-shadow:0 16px 34px rgba(35,105,153,.12)}
+.stamp-hero-note strong,.stamp-hero-note span,.stamp-hero-note b{display:block}
+.stamp-hero-note strong{font-size:13px;color:#236b9c}.stamp-hero-note span{font-size:9px;color:var(--muted);margin-top:5px}.stamp-hero-note b{font:600 23px Georgia,serif;margin-top:20px}
+.stamp-warning{display:flex;gap:12px;padding:17px 20px;margin-top:16px;background:#fff9eb;border-color:#f1dfb5}
+.stamp-warning>svg{flex:none;color:#9a7327}.stamp-warning strong{font-size:12px}.stamp-warning p{font-size:10px;line-height:1.55;color:#6f654d;margin:5px 0 0}
+.stamp-guide-grid{display:grid;grid-template-columns:repeat(3,minmax(0,1fr));gap:14px;margin-top:16px}
+.stamp-guide-grid article{padding:19px}.stamp-guide-grid strong{font-size:11px}.stamp-guide-grid p{font-size:10px;line-height:1.55;color:#6c7c87;min-height:63px}.stamp-guide-grid a{display:inline-flex;gap:5px;align-items:center;font-size:9px;font-weight:700;color:var(--green);text-decoration:none}.stamp-guide-grid a svg{width:12px}
+.stamp-editor,.stamp-register{padding:23px;margin-top:17px}.stamp-editor form{margin-top:19px}
+.stamp-form-grid{display:grid;grid-template-columns:repeat(2,minmax(0,1fr));gap:14px}
+.stamp-form-grid label{display:flex;flex-direction:column;gap:6px;font-size:10px;font-weight:700;color:#526b7b}
+.stamp-form-grid input:not([type="checkbox"]),.stamp-form-grid select,.stamp-form-grid textarea{width:100%;min-height:39px;padding:8px 10px;border:1px solid #d3e4f0;border-radius:8px;background:white;color:var(--ink);font-size:11px;outline-color:#7bb5dd}
+.stamp-form-grid textarea{font:inherit;resize:vertical}.stamp-form-grid label small{font-size:9px;font-weight:400;color:var(--muted)}
+.stamp-form-grid .stamp-check{display:flex;flex-direction:row;align-items:center;gap:9px;padding:8px 10px;min-height:39px;border:1px solid #e0eaf1;border-radius:8px;background:#f8fbfe;font-size:10px;font-weight:500;color:#506c80}
+.stamp-check input{accent-color:#287cb6}.stamp-wide{grid-column:1/-1}
+.stamp-estimate{display:grid;grid-template-columns:minmax(180px,1fr) 1.7fr;align-items:center;gap:20px;padding:18px;margin:18px 0;border:1px solid #cfe5f5;border-radius:12px;background:#f0f9ff}
+.stamp-estimate small,.stamp-estimate strong,.stamp-estimate span{display:block}.stamp-estimate small{font-size:9px;color:#5e819a}.stamp-estimate strong{font:600 24px Georgia,serif;margin:6px 0;color:#1e6d9f}.stamp-estimate span,.stamp-estimate p{font-size:10px;line-height:1.5;color:#56758a}.stamp-estimate p{margin:0}
+.stamp-form-actions{display:flex;align-items:center;gap:14px;margin-top:20px}.stamp-form-actions span{font-size:9px;color:var(--muted)}
+.stamp-register .table-wrap{margin-top:13px}.stamp-register table{min-width:1000px}.stamp-register td{vertical-align:top}.stamp-register td strong{display:block;font-size:10px;color:var(--ink)}.stamp-register td small{display:block;margin-top:5px;font-size:8px;color:var(--muted);max-width:250px;line-height:1.4}.stamp-register td .stamp-overdue{color:#b45143;font-weight:700}.stamp-actions{display:flex;gap:9px;align-items:center}.stamp-actions .link-action{display:inline-flex;align-items:center;gap:3px}.stamp-actions .link-action svg{width:12px;height:12px}.stamp-actions span{font-size:9px;color:var(--muted)}
+.stamp-empty{text-align:center;padding:35px 12px}.stamp-empty svg{color:var(--green);width:30px;height:30px}.stamp-empty strong{display:block;font-size:12px;margin-top:9px}.stamp-empty p{font-size:10px;color:var(--muted)}
+.stamp-footnote{display:flex;gap:7px;align-items:flex-start;color:#728a9b;font-size:9px;line-height:1.5}.stamp-footnote svg{width:14px;flex:none}
+@media(max-width:950px){.stamp-guide-grid{grid-template-columns:1fr}.stamp-guide-grid p{min-height:0}}
+@media(max-width:700px){.stamp-hero-note{display:none}.stamp-form-grid,.stamp-estimate{grid-template-columns:1fr}.stamp-form-actions{align-items:flex-start;flex-direction:column}.stamp-editor,.stamp-register{padding:17px}}
