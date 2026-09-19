@@ -48,14 +48,16 @@ import {
   Wifi,
   X,
 } from "lucide-react";
-import { CSSProperties, FormEvent, useEffect, useMemo, useRef, useState } from "react";
+import { CSSProperties, FormEvent, useCallback, useEffect, useMemo, useRef, useState } from "react";
 import CompanyAccounting, { CompanyAccountingView } from "./components/company-accounting";
+import StampDutyWorkspace from "./components/stamp-duty-workspace";
 import { balanceSheet, cashFlowStatement, chartOfAccounts, profitAndLoss, sanitizeJournalEntries, seedJournalEntries, seedSoleProprietorJournalEntries, soleProprietorChartOfAccounts, taxComputation } from "./lib/accounting";
 import type { AccountingReceipt, JournalEntry } from "./lib/accounting";
 import { translateToChinese } from "./i18n";
 import { autoRegions, countPdfPages, readPdfRegion } from "./lib/pdf-receipts";
 import type { Crop, PdfRegion } from "./lib/pdf-receipts";
 import { getReceiptEvidence, saveReceiptEvidence } from "./lib/receipt-evidence";
+import { loadStampRecords, STAMP_RULE_VERSION } from "./lib/stamp-duty";
 
 type Entity = "personal" | "business" | "company";
 type Category = "Food & Beverage" | "Stationery" | "Petrol" | "Toll Fee" | "Mobile" | "Entertainment" | "Office Rent" | "Software & Subscriptions" | "Professional Fees" | "Advertising & Marketing" | "Utilities" | "Medical" | "Lifestyle" | "Education" | "Insurance" | "EPF & SOCSO" | "Zakat" | "Others";
@@ -434,7 +436,7 @@ export default function Home() {
   const [receipts, setReceipts] = useState(seedReceipts);
   const [receiptsReady, setReceiptsReady] = useState(false);
   const [entity, setEntity] = useState<Entity>("company");
-  const [tab, setTab] = useState<"overview" | "receipts" | "bank" | "myinvois" | "ledger" | "pl" | "balance" | "cashflow" | "filing" | "tax" | "audit">("overview");
+  const [tab, setTab] = useState<"overview" | "receipts" | "bank" | "myinvois" | "ledger" | "pl" | "balance" | "cashflow" | "filing" | "tax" | "stamp" | "audit">("overview");
   const [activeForm, setActiveForm] = useState<"B" | "C" | "BE">("C");
   const [uploadOpen, setUploadOpen] = useState(false);
   const [processing, setProcessing] = useState(false);
@@ -478,6 +480,7 @@ export default function Home() {
   const currentName = isCompany ? "Solver Academy" : "Sim Lip Geap";
   const currentAccountLabel = isPersonal ? "Personal" : isCompany ? "Sdn. Bhd." : "Sole proprietor";
   const bankRows = isPersonal ? [] : bankRowsByEntity[entity];
+  const stampToast = useCallback((message: string) => { setToast(message); setTimeout(() => setToast(""), 4000); }, []);
 
   useEffect(() => {
     // eslint-disable-next-line react-hooks/set-state-in-effect -- hydrate the saved display language after mount
@@ -802,6 +805,11 @@ export default function Home() {
       sevenYearRetentionUntil: "31 Dec 2034 (indicative if the YA 2026 return is filed during 2027; recalculate from the end of the actual filing year)",
       summary: { grossExpenses: totals.total, potentialBusinessDeductions: totals.business, personalReliefReceipts: totals.relief },
       receipts: entityReceipts,
+      stampDuty: {
+        sourceRuleVersion: STAMP_RULE_VERSION,
+        records: loadStampRecords().filter((item) => item.entity === entity),
+        note: "Indicative duty is a working paper only. Official duty, submission and stamp certificate references are user-entered; no MyTax verification or automatic income-tax deduction is performed.",
+      },
       bankReconciliation: bankRows,
       businessAccounting: !isPersonal ? {
         framework: isCompany ? "MPERS" : "Sole proprietor business accounts",
@@ -827,10 +835,12 @@ export default function Home() {
 
   async function downloadEvidenceZip() {
     const linked = entityReceipts.filter((receipt) => receipt.hasEvidence);
-    if (!linked.length) { setToast("No saved PDF evidence in this account yet."); return; }
+    const stampLinked = loadStampRecords().filter((item) => item.entity === entity && item.hasEvidence);
+    if (!linked.length && !stampLinked.length) { setToast("No saved PDF evidence in this account yet."); return; }
     try {
       const files: Record<string, Uint8Array> = {};
       const manifest: { id: string; merchant: string; date: string; amount: number; category: string; pdfFile: string }[] = [];
+      const stampManifest: { id: string; title: string; category: string; executedAt: string; pdfFile: string }[] = [];
       for (const receipt of linked) {
         const pdf = await getReceiptEvidence(receipt.id);
         if (!pdf) throw new Error(`Missing PDF for ${receipt.merchant}. Keep this browser data and check the receipt list.`);
@@ -838,15 +848,22 @@ export default function Home() {
         files[name] = new Uint8Array(await pdf.arrayBuffer());
         manifest.push({ id: receipt.id, merchant: receipt.merchant, date: receipt.date, amount: receipt.amount, category: receipt.category, pdfFile: name });
       }
-      files["manifest.json"] = new TextEncoder().encode(JSON.stringify({ entity, exportedAt: new Date().toISOString(), receipts: manifest }, null, 2));
+      for (const instrument of stampLinked) {
+        const pdf = await getReceiptEvidence(`stamp:${instrument.id}`);
+        if (!pdf) throw new Error(`Missing stamp-duty PDF for ${instrument.title}. Keep this browser data and check the stamp-duty register.`);
+        const name = `stamp-instruments/${instrument.executedAt}-${instrument.category}-${instrument.id}.pdf`;
+        files[name] = new Uint8Array(await pdf.arrayBuffer());
+        stampManifest.push({ id: instrument.id, title: instrument.title, category: instrument.category, executedAt: instrument.executedAt, pdfFile: name });
+      }
+      files["manifest.json"] = new TextEncoder().encode(JSON.stringify({ entity, exportedAt: new Date().toISOString(), receipts: manifest, stampInstruments: stampManifest }, null, 2));
       const { zipSync } = await import("fflate");
       const archive = new Blob([Uint8Array.from(zipSync(files, { level: 6 }))], { type: "application/zip" });
       const link = document.createElement("a");
       link.href = URL.createObjectURL(archive);
-      link.download = `AMS-${entity}-receipt-PDFs.zip`;
+      link.download = `AMS-${entity}-evidence-PDFs.zip`;
       link.click();
       setTimeout(() => URL.revokeObjectURL(link.href), 60_000);
-      setToast(`${linked.length} receipt PDFs exported with a manifest.`);
+      setToast(`${linked.length} receipt PDFs and ${stampLinked.length} instrument PDFs exported with a manifest.`);
     } catch (error) {
       setToast(error instanceof Error ? error.message : "Could not export receipt PDFs.");
     }
@@ -959,6 +976,7 @@ export default function Home() {
           {!isPersonal && <button className={tab === "cashflow" ? "active" : ""} onClick={() => setTab("cashflow")}><CircleDollarSign /> Cash Flow</button>}
           <button className={tab === "filing" ? "active" : ""} onClick={() => setTab("filing")}><ClipboardCheck /> Form checklist <span className="nav-progress">{filingPercent}%</span></button>
           <button className={tab === "tax" ? "active" : ""} onClick={() => setTab("tax")}><FileText /> {isPersonal ? "Tax Report" : isCompany ? "Form C & Tax" : "Form B Tax"}</button>
+          <button className={tab === "stamp" ? "active" : ""} onClick={() => setTab("stamp")}><FileCheck2 /> Stamp Duty</button>
           <button className={tab === "audit" ? "active" : ""} onClick={() => setTab("audit")}><Archive /> Audit Pack</button>
         </nav>
         <div className="sidebar-bottom">
@@ -971,7 +989,7 @@ export default function Home() {
       <section className="workspace">
         <header>
           <button className="mobile-menu" aria-label="Open menu" onClick={() => setMenuOpen(true)}><Menu /></button>
-          <div><p className="eyebrow">{isPersonal ? "SIM LIP GEAP · PERSONAL · FORM BE" : isCompany ? "SOLVER ACADEMY SDN. BHD. · MPERS · FORM C" : "SIM LIP GEAP · SOLE PROPRIETOR · FORM B"}</p><h1>{tab === "overview" ? `Good morning, ${isCompany ? "Solver" : "Sim"}` : tab === "receipts" ? `${currentAccountLabel} receipts` : tab === "bank" ? "Bank reconciliation" : tab === "myinvois" ? "MyInvois records" : tab === "ledger" ? "General Ledger & Trial Balance" : tab === "pl" ? "Profit & Loss" : tab === "balance" ? "Balance Sheet" : tab === "cashflow" ? "Cash Flow Statement" : tab === "filing" ? `Borang ${currentForm} information checklist` : tab === "audit" ? "Seven-year Audit Pack" : isPersonal ? "Tax-ready summary" : isCompany ? "Form C tax computation" : "Form B tax summary"}</h1></div>
+          <div><p className="eyebrow">{isPersonal ? "SIM LIP GEAP · PERSONAL · FORM BE" : isCompany ? "SOLVER ACADEMY SDN. BHD. · MPERS · FORM C" : "SIM LIP GEAP · SOLE PROPRIETOR · FORM B"}</p><h1>{tab === "overview" ? `Good morning, ${isCompany ? "Solver" : "Sim"}` : tab === "receipts" ? `${currentAccountLabel} receipts` : tab === "bank" ? "Bank reconciliation" : tab === "myinvois" ? "MyInvois records" : tab === "ledger" ? "General Ledger & Trial Balance" : tab === "pl" ? "Profit & Loss" : tab === "balance" ? "Balance Sheet" : tab === "cashflow" ? "Cash Flow Statement" : tab === "filing" ? `Borang ${currentForm} information checklist` : tab === "stamp" ? "Stamp Duty" : tab === "audit" ? "Seven-year Audit Pack" : isPersonal ? "Tax-ready summary" : isCompany ? "Form C tax computation" : "Form B tax summary"}</h1></div>
           <div className="header-actions"><div className="language-switch" role="group" aria-label="Language"><Languages /><button className={language === "zh" ? "active" : ""} aria-pressed={language === "zh"} onClick={() => setLanguage("zh")}>中文</button><button className={language === "en" ? "active" : ""} aria-pressed={language === "en"} onClick={() => setLanguage("en")}>EN</button></div><button className="icon-btn" aria-label="Notifications"><Bell /></button><button className="primary" onClick={() => setUploadOpen(true)}><Plus /> Upload receipt</button></div>
         </header>
 
@@ -1011,6 +1029,8 @@ export default function Home() {
         )}
 
         {tab === "receipts" && <div className="content"><ReceiptTable entity={entity} receipts={filtered} query={query} setQuery={setQuery} onViewAll={() => { setDraft(null); setUploadOpen(true); }} onEdit={(receipt) => { setDraft(receipt); setUploadOpen(true); }} onOpenEvidence={openReceiptEvidence} onExport={exportCsv} full /></div>}
+
+        {tab === "stamp" && <StampDutyWorkspace entity={entity} language={language} onToast={stampToast} />}
 
         {tab === "bank" && (
           <div className="content feature-page">
@@ -1104,7 +1124,7 @@ export default function Home() {
 
         {tab === "audit" && (
           <div className="content feature-page">
-            <section className="feature-hero audit-hero"><div><span className="pill"><Archive /> LHDN record support</span><h2>One evidence pack. Seven-year-ready.</h2><p>Download the register and the separate PDF evidence archive. PDFs are stored in this browser until you export them; the JSON register alone does not contain the files.</p><div className="hero-actions"><button className="dark-button" onClick={downloadAuditPack}><Download /> Download register JSON</button><button className="secondary" onClick={downloadEvidenceZip}><FileText /> Download receipt PDFs</button></div></div><div className="archive-visual"><Archive /><strong>YA 2026</strong><span>Indicative target if filed in 2027</span><b>31 Dec 2034</b></div></section>
+            <section className="feature-hero audit-hero"><div><span className="pill"><Archive /> LHDN record support</span><h2>One evidence pack. Seven-year-ready.</h2><p>Download the receipt and stamp-duty registers plus the separate PDF evidence archive. PDFs are stored in this browser until you export them; the JSON register alone does not contain the files.</p><div className="hero-actions"><button className="dark-button" onClick={downloadAuditPack}><Download /> Download register JSON</button><button className="secondary" onClick={downloadEvidenceZip}><FileText /> Download evidence PDFs</button></div></div><div className="archive-visual"><Archive /><strong>YA 2026</strong><span>Indicative target if filed in 2027</span><b>31 Dec 2034</b></div></section>
             <section className="audit-grid"><article className="panel"><span className="check-circle"><Check /></span><h3>{isCompany ? "Solver Academy Sdn. Bhd." : "Sim Lip Geap"} register</h3><p>{entityReceipts.length} records with categories and source-file references.</p></article><article className="panel"><span className="check-circle"><Check /></span><h3>{isPersonal ? "Relief evidence" : "Business purpose"}</h3><p>{entityReceipts.filter((r) => r.businessPurpose).length} records documented; {entityReceipts.filter((r) => r.taxUse === "Review").length} needs review.</p></article><article className="panel"><span className="check-circle"><Check /></span><h3>{isPersonal ? "Personal-only account" : "Bank reconciliation"}</h3><p>{isPersonal ? "No business or company expenses included." : `${bankRows.filter((row) => row.status === "Matched").length} matched transactions and ${bankRows.filter((row) => row.status !== "Matched").length} missing receipts.`}</p></article><article className="panel"><span className="check-circle"><Check /></span><h3>{isPersonal ? "Form BE register" : isCompany ? "Form C and MyInvois register" : "Form B register"}</h3><p>{isPersonal ? `${entityReceipts.filter((r) => r.taxUse === "Relief").length} potential relief records.` : isCompany ? "Company accounting and recorded MyInvois UUID references are included; API validation evidence remains separate." : "Sole proprietor records stay separate from the Sdn. Bhd."}</p></article></section>
             <section className="panel retention"><ShieldCheck /><div><h3>Retention reminder is active</h3><p>Keep the YA 2026 records through the applicable seven-year period. Browser-only data is not a guaranteed backup, so export a copy for your own secure storage and tax agent.</p></div><span className="safe-chip">7 years</span></section>
           </div>
