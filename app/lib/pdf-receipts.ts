@@ -1,6 +1,68 @@
 export type Crop = { x: number; y: number; width: number; height: number };
 export type PdfRegion = { page: number; crop: Crop; text: string; preview: string; pdf: Blob };
 
+export type ReceiptCategory =
+  | "Food & Beverage"
+  | "Stationery"
+  | "Petrol"
+  | "Toll Fee"
+  | "Mobile"
+  | "Entertainment"
+  | "Office Rent"
+  | "Software & Subscriptions"
+  | "Professional Fees"
+  | "Advertising & Marketing"
+  | "Utilities"
+  | "Medical"
+  | "Lifestyle"
+  | "Education"
+  | "Insurance"
+  | "EPF & SOCSO"
+  | "Zakat"
+  | "Others";
+
+export type ReceiptClassification = {
+  category: ReceiptCategory;
+  confidence: number;
+  matchedRule: string;
+};
+
+const categoryRules: Array<{
+  category: ReceiptCategory;
+  confidence: number;
+  label: string;
+  pattern: RegExp;
+}> = [
+  { category: "Petrol", confidence: 96, label: "fuel merchant", pattern: /\b(petronas|shell|caltex|bhpetrol|petron|petrol|fuel|diesel|ron ?9[57])\b/i },
+  { category: "Toll Fee", confidence: 95, label: "toll or parking", pattern: /touch.?n.?go|\btng\b|plus malaysia|smarttag|\brfid\b|\btoll\b|tol plaza|parking|parkir|car ?park|dbkl parking/i },
+  { category: "Mobile", confidence: 95, label: "telecommunications", pattern: /\b(maxis|celcomdigi|celcom|digi|u mobile|yes ?5g|unifi mobile|telekom malaysia|mobile|postpaid|prepaid)\b/i },
+  { category: "Medical", confidence: 94, label: "medical provider", pattern: /hospital|clinic|klinik|medical|pharmacy|farmasi|doctor|doktor|dental|kpj|pantai|sunway medical|guardian health/i },
+  { category: "Insurance", confidence: 94, label: "insurance provider", pattern: /insurance|takaful|prudential|aia|great eastern|etiqa|allianz|zurich/i },
+  { category: "Education", confidence: 91, label: "education", pattern: /tuition|course|training fee|university|college|academy fee|education|yuran pengajian/i },
+  { category: "Zakat", confidence: 97, label: "zakat", pattern: /zakat|fitrah|pusat pungutan zakat|lembaga zakat/i },
+  { category: "EPF & SOCSO", confidence: 96, label: "statutory contribution", pattern: /\b(epf|kwsp|socso|perkeso|eis|sip)\b/i },
+  { category: "Office Rent", confidence: 91, label: "office rental", pattern: /office rent|rental office|sewa pejabat|tenancy|coworking|co-working/i },
+  { category: "Software & Subscriptions", confidence: 94, label: "software subscription", pattern: /google workspace|microsoft 365|adobe|canva|dropbox|zoom|software|subscription|hosting|domain renewal|cloud service/i },
+  { category: "Advertising & Marketing", confidence: 93, label: "advertising", pattern: /facebook ads|meta platforms|google ads|tiktok ads|advertising|marketing|promotion|printing banner|boost post/i },
+  { category: "Professional Fees", confidence: 92, label: "professional service", pattern: /accounting fee|audit fee|legal fee|professional fee|company secretary|secretarial fee|tax agent|consulting fee/i },
+  { category: "Utilities", confidence: 93, label: "utility provider", pattern: /\b(tnb|syabas)\b|air selangor|electricity|utility|bil air|bil elektrik|indah water/i },
+  { category: "Stationery", confidence: 91, label: "stationery or office supplies", pattern: /popular bookstore|stationery|alat tulis|office supplies|photostat|printing|printer ink|toner|\bpaper\b|\bpen\b|notebook/i },
+  { category: "Entertainment", confidence: 91, label: "entertainment", pattern: /\b(gsc|tgv)\b|cinema|movie|netflix|spotify|entertainment|karaoke|theme park/i },
+  { category: "Food & Beverage", confidence: 90, label: "food or beverage", pattern: /restaurant|restoran|cafe|coffee|kopitiam|kedai makan|makanan|minuman|grabfood|foodpanda|mcdonald|\bmcd\b|\bkfc\b|starbucks|secret recipe|nasi|makan/i },
+  { category: "Lifestyle", confidence: 82, label: "lifestyle", pattern: /sports equipment|gym|fitness|computer|tablet|smartphone|internet bill|book purchase/i },
+];
+
+export function classifyReceiptText(text: string): ReceiptClassification {
+  const normalized = text.normalize("NFKC").replace(/\s+/g, " ").trim();
+  if (!normalized) return { category: "Others", confidence: 20, matchedRule: "no readable text" };
+  const match = categoryRules.find((rule) => rule.pattern.test(normalized));
+  return match
+    ? { category: match.category, confidence: match.confidence, matchedRule: match.label }
+    : { category: "Others", confidence: 45, matchedRule: "no category keyword" };
+}
+
+const fullPageCrop: Crop = { x: 0, y: 0, width: 1, height: 1 };
+
 // The projection finds broad whitespace between separate slips without treating
 // ordinary line spacing inside a receipt as a new document.
 export function horizontalReceiptBands(pixels: Uint8ClampedArray, width: number, height: number): Crop[] {
@@ -15,7 +77,7 @@ export function horizontalReceiptBands(pixels: Uint8ClampedArray, width: number,
     }
     if (dark >= threshold) active.push(y);
   }
-  if (!active.length) return [{ x: 0, y: 0, width: 1, height: 1 }];
+  if (!active.length) return [fullPageCrop];
   const gap = Math.max(38, Math.round(height * 0.035));
   const bands: [number, number][] = [];
   let start = active[0];
@@ -29,13 +91,82 @@ export function horizontalReceiptBands(pixels: Uint8ClampedArray, width: number,
   }
   bands.push([start, end]);
   const usable = bands.filter(([top, bottom]) => bottom - top >= Math.max(24, height * 0.02));
-  if (usable.length < 2) return [{ x: 0, y: 0, width: 1, height: 1 }];
+  if (usable.length < 2) return [fullPageCrop];
   return usable.map(([top, bottom]) => {
     const padding = Math.min(18, Math.round(height * 0.012));
     const y = Math.max(0, top - padding);
     const bottomEdge = Math.min(height, bottom + padding);
     return { x: 0, y: y / height, width: 1, height: (bottomEdge - y) / height };
   });
+}
+
+// Side-by-side scans need a separate projection. The larger gutter and
+// minimum-width rules avoid treating normal amount columns as separate slips.
+export function verticalReceiptBands(pixels: Uint8ClampedArray, width: number, height: number): Crop[] {
+  if (!width || !height || pixels.length < width * height * 4) return [];
+  const active: number[] = [];
+  const threshold = Math.max(3, Math.floor(height * 0.004));
+  for (let x = 0; x < width; x++) {
+    let dark = 0;
+    for (let y = 0; y < height; y++) {
+      const offset = (y * width + x) * 4;
+      if (pixels[offset] < 218 && pixels[offset + 1] < 218 && pixels[offset + 2] < 218) dark++;
+    }
+    if (dark >= threshold) active.push(x);
+  }
+  if (!active.length) return [fullPageCrop];
+  const gap = Math.max(54, Math.round(width * 0.07));
+  const bands: [number, number][] = [];
+  let start = active[0];
+  let end = active[0];
+  for (const column of active.slice(1)) {
+    if (column - end > gap) {
+      bands.push([start, end]);
+      start = column;
+    }
+    end = column;
+  }
+  bands.push([start, end]);
+  const minimumWidth = Math.max(48, width * 0.18);
+  const usable = bands.filter(([left, right]) => right - left >= minimumWidth);
+  if (usable.length < 2 || usable.length > 4) return [fullPageCrop];
+  return usable.map(([left, right]) => {
+    const padding = Math.min(18, Math.round(width * 0.012));
+    const x = Math.max(0, left - padding);
+    const rightEdge = Math.min(width, right + padding);
+    return { x: x / width, y: 0, width: (rightEdge - x) / width, height: 1 };
+  });
+}
+
+function cropPixels(pixels: Uint8ClampedArray, width: number, height: number, crop: Crop) {
+  const left = Math.max(0, Math.floor(crop.x * width));
+  const top = Math.max(0, Math.floor(crop.y * height));
+  const cropWidth = Math.max(1, Math.min(width - left, Math.ceil(crop.width * width)));
+  const cropHeight = Math.max(1, Math.min(height - top, Math.ceil(crop.height * height)));
+  const output = new Uint8ClampedArray(cropWidth * cropHeight * 4);
+  for (let y = 0; y < cropHeight; y++) {
+    const sourceStart = ((top + y) * width + left) * 4;
+    output.set(pixels.subarray(sourceStart, sourceStart + cropWidth * 4), y * cropWidth * 4);
+  }
+  return { pixels: output, width: cropWidth, height: cropHeight };
+}
+
+export function receiptRegionsFromPixels(pixels: Uint8ClampedArray, width: number, height: number): Crop[] {
+  const rows = horizontalReceiptBands(pixels, width, height);
+  if (rows.length > 1) {
+    return rows.flatMap((row) => {
+      const section = cropPixels(pixels, width, height, row);
+      const columns = verticalReceiptBands(section.pixels, section.width, section.height);
+      if (columns.length < 2) return [row];
+      return columns.map((column) => ({
+        x: row.x + column.x * row.width,
+        y: row.y,
+        width: column.width * row.width,
+        height: row.height,
+      }));
+    });
+  }
+  return verticalReceiptBands(pixels, width, height);
 }
 
 async function renderPage(file: File, pageNumber: number) {
@@ -76,7 +207,7 @@ export async function autoRegions(file: File, pageNumber: number): Promise<Crop[
   const { canvas } = await renderPage(file, pageNumber);
   const context = canvas.getContext("2d", { willReadFrequently: true });
   if (!context) throw new Error("This browser cannot inspect PDF pages.");
-  return horizontalReceiptBands(context.getImageData(0, 0, canvas.width, canvas.height).data, canvas.width, canvas.height);
+  return receiptRegionsFromPixels(context.getImageData(0, 0, canvas.width, canvas.height).data, canvas.width, canvas.height);
 }
 
 export async function readPdfRegion(file: File, pageNumber: number, crop: Crop): Promise<PdfRegion> {
