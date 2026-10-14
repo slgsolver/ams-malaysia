@@ -1,0 +1,99 @@
+<svg xmlns="http://www.w3.org/2000/svg" width="1200" height="630" viewBox="0 0 1200 630" role="img" aria-labelledby="title desc">
+  <title id="title">AMS Malaysia accounting system</title>
+  <desc id="desc">AMS Malaysia receipt, financial statement and tax records interface</desc>
+  <defs>
+    <linearGradient id="page" x1="70" y1="24" x2="1120" y2="620" gradientUnits="userSpaceOnUse">
+      <stop stop-color="#F7FCFF"/>
+      <stop offset="1" stop-color="#DCEFFC"/>
+    </linearGradient>
+    <linearGradient id="brand" x1="0" y1="0" x2="1" y2="1">
+      <stop stop-color="#7CCAFF"/>
+      <stop offset="1" stop-color="#247FBC"/>
+    </linearGradient>
+    <filter id="shadow" x="-20%" y="-20%" width="140%" height="160%">
+      <feDropShadow dx="0" dy="16" stdDeviation="20" flood-color="#18547C" flood-opacity="0.16"/>
+    </filter>
+  </defs>
+  <rect width="1200" height="630" fill="url(#page)"/>
+  <circle cx="1137" cy="61" r="212" fill="#C6E7FB" opacity="0.48"/>
+  <circle cx="53" cy="604" r="170" fill="#AEDAF5" opacity="0.35"/>
+
+  <g transform="translate(62 62)">
+    <rect width="70" height="70" rx="18" fill="url(#brand)"/>
+    <path fill="#fff" fill-rule="evenodd" d="M35 12 57 58H47l-5-11H28l-5 11H13l22-46Zm0 20-4 9h8l-4-9Z"/>
+    <path d="m45 24 4 4 8-8" fill="none" stroke="#EAF8FF" stroke-width="4" stroke-linecap="round" stroke-linejoin="round"/>
+    <text x="91" y="35" font-family="Arial, sans-serif" font-size="31" font-weight="800" fill="#143A55">AMS</text>
+    <text x="91" y="58" font-family="Arial, sans-serif" font-size="15" font-weight="700" letter-spacing="2.5" fill="#4A7898">MALAYSIA</text>
+  </g>
+
+  <text x="62" y="210" font-family="Arial, sans-serif" font-size="18" font-weight="700" letter-spacing="2.2" fill="#2E83BD">MALAYSIA ACCOUNTING SYSTEM</text>
+  <text x="62" y="271" font-family="Arial, sans-serif" font-size="46" font-weight="800" fill="#12344C">Receipts to accounts,</text>
+  <text x="62" y="326" font-family="Arial, sans-serif" font-size="46" font-weight="800" fill="#12344C">tax records made clear.</text>
+  <text x="62" y="376" font-family="Arial, sans-serif" font-size="22" font-weight="700" fill="#2C6F9D">收据分类 · 财务报表 · 马来西亚报税资料</text>
+
+  <g font-family="Arial, sans-serif" font-size="15" font-weight="700" fill="#315D7A">
+    <rect x="62" y="422" width="144" height="43" rx="21.5" fill="#FFFFFF" stroke="#C7E1F1"/>
+    <circle cx="86" cy="443.5" r="8" fill="#3A9FDA"/>
+    <text x="103" y="449">Form BE</text>
+    <rect x="218" y="422" width="130" height="43" rx="21.5" fill="#FFFFFF" stroke="#C7E1F1"/>
+    <circle cx="242" cy="443.5" r="8" fill="#3A9FDA"/>
+    <text x="259" y="449">Form B</text>
+    <rect x="360" y="422" width="142" height="43" rx="21.5" fill="#FFFFFF" stroke="#C7E1F1"/>
+    <circle cx="384" cy="443.5" r="8" fill="#3A9FDA"/>
+    <text x="401" y="449">Sdn. Bhd.</text>
+  </g>
+  <text x="62" y="526" font-family="Arial, sans-serif" font-size="16" font-weight="700" fill="#557D98">P&amp;L · Balance Sheet · Cash Flow · LHDN working papers</text>
+  <text x="62" y="558" font-family="Arial, sans-serif" font-size="14" fill="#6F8FA5">Bilingual records with source-document evidence</text>
+
+  <g transform="translate(604 72)" filter="url(#shadow)">
+    <rect width="535" height="487" rx="25" fill="#FFFFFF"/>
+    <rect width="535" height="67" rx="25" fill="#1F6F9F"/>
+    <path d="M0 42h535v25H0z" fill="#1F6F9F"/>
+    <circle cx="30" cy="34" r="8" fill="#8AD2FF"/>
+    <circle cx="55" cy="34" r="8" fill="#C9EAFE"/>
+    <text x="83" y="40" font-family="Arial, sans-serif" font-size="18" font-weight="800" fill="#FFFFFF">AMS Dashboard</text>
+    <rect x="390" y="20" width="119" height="28" rx="14" fill="#3B88B7"/>
+    <text x="411" y="39" font-family="Arial, sans-serif" font-size="11" font-weight="700" fill="#FFFFFF">YA 2026 · MYR</text>
+
+    <g transform="translate(24 91)" font-family="Arial, sans-serif">
+      <rect width="150" height="92" rx="14" fill="#EAF7FF"/>
+      <text x="17" y="28" font-size="12" font-weight="700" fill="#66859A">TOTAL EXPENSES</text>
+      <text x="17" y="60" font-size="25" font-weight="800" fill="#16466A">RM 8,630</text>
+      <text x="17" y="79" font-size="10" fill="#4A8BB5">Receipts processed</text>
+      <rect x="163" width="150" height="92" rx="14" fill="#EFF9FF"/>
+      <text x="180" y="28" font-size="12" font-weight="700" fill="#66859A">CLAIMABLE</text>
+      <text x="180" y="60" font-size="25" font-weight="800" fill="#16466A">RM 7,942</text>
+      <text x="180" y="79" font-size="10" fill="#4A8BB5">Business use</text>
+      <rect x="326" width="161" height="92" rx="14" fill="#E6F5FD"/>
+      <text x="343" y="28" font-size="12" font-weight="700" fill="#66859A">REVIEW</text>
+      <text x="343" y="60" font-size="25" font-weight="800" fill="#16466A">2 items</text>
+      <text x="343" y="79" font-size="10" fill="#4A8BB5">Needs attention</text>
+    </g>
+
+    <g transform="translate(24 205)" font-family="Arial, sans-serif">
+      <text y="17" font-size="15" font-weight="800" fill="#24475F">Recent receipts</text>
+      <text x="382" y="17" font-size="11" font-weight="700" fill="#2E83BD">AUTO-CATEGORISED</text>
+      <line x1="0" y1="34" x2="487" y2="34" stroke="#DCEAF3"/>
+      <g transform="translate(0 51)">
+        <rect width="34" height="34" rx="10" fill="#DDF2FF"/><path d="M10 17h14M17 10v14" stroke="#2C84BD" stroke-width="3" stroke-linecap="round"/>
+        <text x="49" y="15" font-size="13" font-weight="700" fill="#29495E">PETRONAS Station</text><text x="49" y="30" font-size="10" fill="#7E99AA">Petrol · Business</text>
+        <text x="420" y="21" font-size="14" font-weight="800" fill="#24475F">RM 120.50</text>
+      </g>
+      <g transform="translate(0 103)">
+        <rect width="34" height="34" rx="10" fill="#E8F7FF"/><path d="M10 12h14v12H10zM13 9h8" fill="none" stroke="#2C84BD" stroke-width="2.5" stroke-linecap="round"/>
+        <text x="49" y="15" font-size="13" font-weight="700" fill="#29495E">Touch 'n Go</text><text x="49" y="30" font-size="10" fill="#7E99AA">Toll &amp; Parking</text>
+        <text x="429" y="21" font-size="14" font-weight="800" fill="#24475F">RM 36.80</text>
+      </g>
+      <g transform="translate(0 155)">
+        <rect width="34" height="34" rx="10" fill="#DDF2FF"/><rect x="11" y="7" width="12" height="20" rx="3" fill="none" stroke="#2C84BD" stroke-width="2.5"/><circle cx="17" cy="23" r="1.5" fill="#2C84BD"/>
+        <text x="49" y="15" font-size="13" font-weight="700" fill="#29495E">Maxis Berhad</text><text x="49" y="30" font-size="10" fill="#7E99AA">Mobile · 70% business use</text>
+        <text x="429" y="21" font-size="14" font-weight="800" fill="#24475F">RM 89.60</text>
+      </g>
+      <rect y="211" width="487" height="46" rx="12" fill="#EAF7FF"/>
+      <text x="17" y="240" font-size="12" font-weight="700" fill="#266D9B">P&amp;L</text>
+      <text x="98" y="240" font-size="12" font-weight="700" fill="#266D9B">BALANCE SHEET</text>
+      <text x="241" y="240" font-size="12" font-weight="700" fill="#266D9B">CASH FLOW</text>
+      <text x="353" y="240" font-size="12" font-weight="700" fill="#266D9B">TAX RECORDS</text>
+    </g>
+  </g>
+</svg>

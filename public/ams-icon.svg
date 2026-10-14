@@ -1,0 +1,20 @@
+<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 1024 1024" role="img" aria-labelledby="title desc">
+  <title id="title">AMS Malaysia</title>
+  <desc id="desc">A white AMS letter A on a light blue accounting app icon</desc>
+  <defs>
+    <linearGradient id="background" x1="128" y1="96" x2="896" y2="928" gradientUnits="userSpaceOnUse">
+      <stop stop-color="#8DD1FF"/>
+      <stop offset="0.52" stop-color="#3EA6EB"/>
+      <stop offset="1" stop-color="#176FAE"/>
+    </linearGradient>
+    <linearGradient id="shine" x1="160" y1="80" x2="700" y2="760" gradientUnits="userSpaceOnUse">
+      <stop stop-color="#FFFFFF" stop-opacity="0.34"/>
+      <stop offset="1" stop-color="#FFFFFF" stop-opacity="0"/>
+    </linearGradient>
+  </defs>
+  <rect width="1024" height="1024" rx="224" fill="url(#background)"/>
+  <path d="M110 320C228 132 440 58 634 101c105 23 196 79 273 165v-42C907 109 815 22 700 22H324C161 22 42 141 42 304v376c0 53 13 103 37 146 4-174 9-355 31-506Z" fill="url(#shine)"/>
+  <path fill="#FFFFFF" fill-rule="evenodd" d="M512 179 826 829H679l-70-157H414l-69 157H198l314-650Zm0 276-54 121h108l-54-121Z"/>
+  <path d="m654 343 54 53 109-111" fill="none" stroke="#E7F7FF" stroke-width="47" stroke-linecap="round" stroke-linejoin="round"/>
+  <rect x="336" y="842" width="352" height="28" rx="14" fill="#DDF4FF" opacity="0.9"/>
+</svg>
