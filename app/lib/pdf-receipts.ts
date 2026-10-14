@@ -1,6 +1,66 @@
 export type Crop = { x: number; y: number; width: number; height: number };
 export type PdfRegion = { page: number; crop: Crop; text: string; preview: string; pdf: Blob };
 
+export type ReceiptCategory =
+  | "Food & Beverage"
+  | "Stationery"
+  | "Petrol"
+  | "Toll Fee"
+  | "Mobile"
+  | "Entertainment"
+  | "Office Rent"
+  | "Software & Subscriptions"
+  | "Professional Fees"
+  | "Advertising & Marketing"
+  | "Utilities"
+  | "Medical"
+  | "Lifestyle"
+  | "Education"
+  | "Insurance"
+  | "EPF & SOCSO"
+  | "Zakat"
+  | "Others";
+
+export type ReceiptClassification = {
+  category: ReceiptCategory;
+  confidence: number;
+  matchedRule: string;
+};
+
+const categoryRules: Array<{
+  category: ReceiptCategory;
+  confidence: number;
+  label: string;
+  pattern: RegExp;
+}> = [
+  { category: "Petrol", confidence: 96, label: "fuel merchant", pattern: /\b(petronas|shell|caltex|bhpetrol|petron|petrol|fuel|diesel|ron ?9[57])\b/i },
+  { category: "Toll Fee", confidence: 95, label: "toll or parking", pattern: /touch.?n.?go|\btng\b|plus malaysia|smarttag|\brfid\b|\btoll\b|tol plaza|parking|parkir|car ?park|dbkl parking/i },
+  { category: "Mobile", confidence: 95, label: "telecommunications", pattern: /\b(maxis|celcomdigi|celcom|digi|u mobile|yes ?5g|unifi mobile|telekom malaysia|mobile|postpaid|prepaid)\b/i },
+  { category: "Medical", confidence: 94, label: "medical provider", pattern: /hospital|clinic|klinik|medical|pharmacy|farmasi|doctor|doktor|dental|kpj|pantai|sunway medical|guardian health/i },
+  { category: "Insurance", confidence: 94, label: "insurance provider", pattern: /insurance|takaful|prudential|aia|great eastern|etiqa|allianz|zurich/i },
+  { category: "Education", confidence: 91, label: "education", pattern: /tuition|course|training fee|university|college|academy fee|education|yuran pengajian/i },
+  { category: "Zakat", confidence: 97, label: "zakat", pattern: /zakat|fitrah|pusat pungutan zakat|lembaga zakat/i },
+  { category: "EPF & SOCSO", confidence: 96, label: "statutory contribution", pattern: /\b(epf|kwsp|socso|perkeso|eis|sip)\b/i },
+  { category: "Office Rent", confidence: 91, label: "office rental", pattern: /office rent|rental office|sewa pejabat|tenancy|coworking|co-working/i },
+  { category: "Software & Subscriptions", confidence: 94, label: "software subscription", pattern: /google workspace|microsoft 365|adobe|canva|dropbox|zoom|software|subscription|hosting|domain renewal|cloud service/i },
+  { category: "Advertising & Marketing", confidence: 93, label: "advertising", pattern: /facebook ads|meta platforms|google ads|tiktok ads|advertising|marketing|promotion|printing banner|boost post/i },
+  { category: "Professional Fees", confidence: 92, label: "professional service", pattern: /accounting fee|audit fee|legal fee|professional fee|company secretary|secretarial fee|tax agent|consulting fee/i },
+  { category: "Utilities", confidence: 93, label: "utility provider", pattern: /\b(tnb|syabas)\b|air selangor|electricity|utility|bil air|bil elektrik|indah water/i },
+  { category: "Stationery", confidence: 91, label: "stationery or office supplies", pattern: /popular bookstore|stationery|alat tulis|office supplies|photostat|printing|printer ink|toner|\bpaper\b|\bpen\b|notebook/i },
+  { category: "Entertainment", confidence: 91, label: "entertainment", pattern: /\b(gsc|tgv)\b|cinema|movie|netflix|spotify|entertainment|karaoke|theme park/i },
+  { category: "Food & Beverage", confidence: 90, label: "food or beverage", pattern: /restaurant|restoran|cafe|coffee|kopitiam|kedai makan|makanan|minuman|grabfood|foodpanda|mcdonald|\bmcd\b|\bkfc\b|starbucks|secret recipe|nasi|makan/i },
+  { category: "Lifestyle", confidence: 82, label: "lifestyle", pattern: /sports equipment|gym|fitness|computer|tablet|smartphone|internet bill|book purchase/i },
+];
+
+export function classifyReceiptText(text: string): ReceiptClassification {
+  const normalized = text.normalize("NFKC").replace(/\s+/g, " ").trim();
+  if (!normalized) return { category: "Others", confidence: 20, matchedRule: "no readable text" };
+  const match = categoryRules.find((rule) => rule.pattern.test(normalized));
+  return match
+    ? { category: match.category, confidence: match.confidence, matchedRule: match.label }
+    : { category: "Others", confidence: 45, matchedRule: "no category keyword" };
+}
+
 const fullPageCrop: Crop = { x: 0, y: 0, width: 1, height: 1 };
 
 // The projection finds broad whitespace between separate slips without treating
