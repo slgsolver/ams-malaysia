@@ -54,13 +54,13 @@ import StampDutyWorkspace from "./components/stamp-duty-workspace";
 import { balanceSheet, cashFlowStatement, chartOfAccounts, profitAndLoss, sanitizeJournalEntries, seedJournalEntries, seedSoleProprietorJournalEntries, soleProprietorChartOfAccounts, taxComputation } from "./lib/accounting";
 import type { AccountingReceipt, JournalEntry } from "./lib/accounting";
 import { translateToChinese } from "./i18n";
-import { autoRegions, countPdfPages, readPdfRegion } from "./lib/pdf-receipts";
-import type { Crop, PdfRegion } from "./lib/pdf-receipts";
+import { autoRegions, classifyReceiptText, countPdfPages, readPdfRegion } from "./lib/pdf-receipts";
+import type { Crop, PdfRegion, ReceiptCategory } from "./lib/pdf-receipts";
 import { getReceiptEvidence, saveReceiptEvidence } from "./lib/receipt-evidence";
 import { loadStampRecords, STAMP_RULE_VERSION } from "./lib/stamp-duty";
 
 type Entity = "personal" | "business" | "company";
-type Category = "Food & Beverage" | "Stationery" | "Petrol" | "Toll Fee" | "Mobile" | "Entertainment" | "Office Rent" | "Software & Subscriptions" | "Professional Fees" | "Advertising & Marketing" | "Utilities" | "Medical" | "Lifestyle" | "Education" | "Insurance" | "EPF & SOCSO" | "Zakat" | "Others";
+type Category = ReceiptCategory;
 type Receipt = {
   id: string;
   entity: Entity;
@@ -383,26 +383,6 @@ function currency(value: number) {
   return new Intl.NumberFormat("en-MY", { style: "currency", currency: "MYR" }).format(value);
 }
 
-function classify(text: string): Category {
-  const value = text.toLowerCase();
-  if (/petronas|shell|petrol|fuel|caltex|bhpetrol/.test(value)) return "Petrol";
-  if (/touch.n.go|toll|plus malaysia|rfid|parking|parkir|car park/.test(value)) return "Toll Fee";
-  if (/maxis|celcom|digi|unifi|mobile|yes 5g|u mobile/.test(value)) return "Mobile";
-  if (/hospital|clinic|medical|pharmacy|doctor|kpj|pantai|sunway medical/.test(value)) return "Medical";
-  if (/insurance|prudential|aia|great eastern|etiqa/.test(value)) return "Insurance";
-  if (/tuition|course|university|college|education/.test(value)) return "Education";
-  if (/zakat|pusat pungutan zakat/.test(value)) return "Zakat";
-  if (/google workspace|microsoft 365|adobe|canva|software|subscription/.test(value)) return "Software & Subscriptions";
-  if (/facebook ads|meta platforms|google ads|advertising|marketing/.test(value)) return "Advertising & Marketing";
-  if (/accounting fee|audit fee|legal fee|professional fee/.test(value)) return "Professional Fees";
-  if (/office rent|rental|tenancy/.test(value)) return "Office Rent";
-  if (/tnb|syabas|air selangor|electricity|utility/.test(value)) return "Utilities";
-  if (/popular|stationery|office|book|paper|ink|pen/.test(value)) return "Stationery";
-  if (/cinema|gsc|tgv|netflix|entertainment|karaoke/.test(value)) return "Entertainment";
-  if (/restaurant|cafe|coffee|food|mcd|starbucks|kopitiam|makan/.test(value)) return "Food & Beverage";
-  return "Others";
-}
-
 function extractAmount(text: string) {
   const lines = text.split(/\n/).map((line) => line.trim());
   const values = (line: string) => [...line.matchAll(/(?:RM\s*)?(\d{1,5}(?:[.,]\d{2})?)/gi)]
@@ -418,14 +398,15 @@ function extractAmount(text: string) {
 function receiptFromPdfRegion(region: PdfRegion, entity: Entity, fileName: string): Receipt {
   const lines = region.text.split(/\n/).map((line) => line.trim()).filter(Boolean);
   const merchant = lines.find((line) => /[a-z]{3}/i.test(line) && line.length <= 80 && !/^(receipt|invoice|tax invoice)$/i.test(line)) || `PDF page ${region.page} receipt`;
-  const category = classify(region.text);
+  const classification = classifyReceiptText(region.text);
+  const category = classification.category;
   return {
     id: crypto.randomUUID(), entity, merchant: merchant.slice(0, 80),
     date: displayDate(extractReceiptDate(region.text) || new Date().toISOString()),
     amount: extractAmount(region.text), category,
     taxUse: entity === "personal" ? (["Medical", "Lifestyle", "Education", "Insurance", "EPF & SOCSO", "Zakat"] as Category[]).includes(category) ? "Relief" : "Personal" : "Review",
     businessUse: entity === "personal" ? 0 : 100,
-    confidence: category === "Others" || !region.text.trim() ? 25 : 75,
+    confidence: classification.confidence,
     fileName: `${fileName} · page ${region.page}`,
     hasEvidence: true,
     paymentAccountCode: entity === "personal" ? undefined : "1010",
@@ -445,6 +426,7 @@ export default function Home() {
   const [pdfDrafts, setPdfDrafts] = useState<PdfDraft[]>([]);
   const [pdfSource, setPdfSource] = useState<File | null>(null);
   const [query, setQuery] = useState("");
+  const [selectedCategory, setSelectedCategory] = useState<Category | null>(null);
   const [toast, setToast] = useState("");
   const [menuOpen, setMenuOpen] = useState(false);
   const [bankRowsByEntity, setBankRowsByEntity] = useState<Record<"business" | "company", typeof bankTransactions>>({ business: [], company: bankTransactions });
@@ -467,7 +449,18 @@ export default function Home() {
     return { total, business, relief, review: entityReceipts.filter((item) => item.taxUse === "Review").length };
   }, [entityReceipts]);
 
-  const filtered = entityReceipts.filter((receipt) => `${receipt.merchant} ${receipt.category}`.toLowerCase().includes(query.toLowerCase()));
+  const categoryBreakdown = useMemo(() => {
+    const amounts = new Map<Category, { amount: number; count: number }>();
+    for (const receipt of entityReceipts) {
+      const current = amounts.get(receipt.category) ?? { amount: 0, count: 0 };
+      amounts.set(receipt.category, { amount: current.amount + receipt.amount, count: current.count + 1 });
+    }
+    return [...amounts.entries()]
+      .map(([category, values]) => ({ category, ...values }))
+      .sort((a, b) => b.amount - a.amount || a.category.localeCompare(b.category));
+  }, [entityReceipts]);
+  const selectedCategoryReceipts = selectedCategory ? entityReceipts.filter((receipt) => receipt.category === selectedCategory) : [];
+  const filtered = entityReceipts.filter((receipt) => (tab !== "receipts" || !selectedCategory || receipt.category === selectedCategory) && `${receipt.merchant} ${receipt.category}`.toLowerCase().includes(query.toLowerCase()));
   const currentFilingSections = useMemo(() => filingSections(entity), [entity]);
   const filingItems = currentFilingSections.flatMap((section) => section.items.map((item) => ({ ...item, key: `${section.id}:${item.id}` })));
   const filingDone = filingItems.filter((item) => filingChecks[item.key]).length;
@@ -610,8 +603,16 @@ export default function Home() {
     setActiveForm(next === "personal" ? "BE" : next === "business" ? "B" : "C");
     setTab("overview");
     setQuery("");
+    setSelectedCategory(null);
     setToast(next === "personal" ? "Switched to Sim Lip Geap · Personal" : next === "business" ? "Switched to Sim Lip Geap · Sole proprietor · Form B" : "Switched to Solver Academy Sdn. Bhd. · Form C");
     setTimeout(() => setToast(""), 2500);
+  }
+
+  function openCategory(category: Category) {
+    setSelectedCategory(category);
+    setQuery("");
+    setTab("receipts");
+    window.scrollTo({ top: 0, behavior: "smooth" });
   }
 
   async function handleFile(file: File) {
@@ -675,7 +676,8 @@ export default function Home() {
     const text = `${ocrText}\n${fileLabel}`;
     const lines = ocrText.split(/\n/).map((line) => line.trim()).filter(Boolean);
     const merchant = lines.find((line) => /[a-z]{3}/i.test(line) && line.length <= 80)?.replace(/\.(jpg|jpeg|png|webp|pdf)$/i, "") || fileLabel.replace(/\.(jpg|jpeg|png|webp)$/i, "") || "New receipt";
-    const category = classify(text);
+    const classification = classifyReceiptText(text);
+    const category = classification.category;
     const amount = extractAmount(text) || 0;
     setProgress(100);
     setDraft({
@@ -688,7 +690,7 @@ export default function Home() {
       taxUse: entity === "personal" ? (["Medical", "Lifestyle", "Education", "Insurance", "EPF & SOCSO", "Zakat"] as Category[]).includes(category) ? "Relief" : "Personal" : category === "Entertainment" ? "Review" : "Business",
       businessUse: entity !== "personal" ? category === "Mobile" || category === "Petrol" ? 70 : 100 : 0,
       businessPurpose: "",
-      confidence: category === "Others" ? 72 : 93,
+      confidence: classification.confidence,
       fileName: file.name,
       paymentAccountCode: entity === "personal" ? undefined : "1010",
     });
@@ -729,6 +731,8 @@ export default function Home() {
       setPdfDrafts([]);
       setPdfSource(null);
       setUploadOpen(false);
+      setSelectedCategory(null);
+      setTab("receipts");
       setToast(`${normalized.length} receipt PDF${normalized.length === 1 ? "" : "s"} saved. Click an amount to open its exact slip.`);
     } catch {
       setToast("Could not save the PDF evidence. No receipt records were added.");
@@ -940,8 +944,8 @@ export default function Home() {
         const amount = moneyValue(read(record, "amount", "totalamount", "invoicetotal", "payableamount", "totalpayableamount"));
         if (!uuid || !merchant || amount <= 0 || knownUuids.has(uuid.toLowerCase())) continue;
         const description = shortText(read(record, "description", "itemdescription", "classification"), 500);
-        const category = classify(`${merchant} ${description}`);
-        additions.push({ id: crypto.randomUUID(), entity, merchant, date: displayDate(read(record, "date", "invoicedate", "issuedate")), amount, category, taxUse: "Review", businessUse: 0, businessPurpose: description || undefined, myInvoisUuid: uuid, confidence: category === "Others" ? 65 : 85, fileName: file.name, paymentAccountCode: "2000" });
+        const classification = classifyReceiptText(`${merchant} ${description}`);
+        additions.push({ id: crypto.randomUUID(), entity, merchant, date: displayDate(read(record, "date", "invoicedate", "issuedate")), amount, category: classification.category, taxUse: "Review", businessUse: 0, businessPurpose: description || undefined, myInvoisUuid: uuid, confidence: classification.confidence, fileName: file.name, paymentAccountCode: "2000" });
         knownUuids.add(uuid.toLowerCase());
       }
       if (!additions.length) setToast("No new invoice found. Check that UUID, supplier, date and total amount columns are present.");
@@ -967,7 +971,7 @@ export default function Home() {
         </div>
         <nav aria-label="Main navigation">
           <button className={tab === "overview" ? "active" : ""} onClick={() => setTab("overview")}><LayoutDashboard /> Overview</button>
-          <button className={tab === "receipts" ? "active" : ""} onClick={() => setTab("receipts")}><ReceiptText /> Receipts <span className="nav-count">{entityReceipts.length}</span></button>
+          <button className={tab === "receipts" ? "active" : ""} onClick={() => { setSelectedCategory(null); setTab("receipts"); }}><ReceiptText /> Receipts <span className="nav-count">{entityReceipts.length}</span></button>
           {!isPersonal && <button className={tab === "bank" ? "active" : ""} onClick={() => setTab("bank")}><Landmark /> Bank matching {bankRows.some((row) => row.status !== "Matched") && <span className="nav-alert">{bankRows.filter((row) => row.status !== "Matched").length}</span>}</button>}
           {!isPersonal && <button className={tab === "myinvois" ? "active" : ""} onClick={() => setTab("myinvois")}><ScanLine /> MyInvois</button>}
           {!isPersonal && <button className={tab === "ledger" ? "active" : ""} onClick={() => setTab("ledger")}><BookOpen /> General Ledger</button>}
@@ -989,7 +993,7 @@ export default function Home() {
       <section className="workspace">
         <header>
           <button className="mobile-menu" aria-label="Open menu" onClick={() => setMenuOpen(true)}><Menu /></button>
-          <div><p className="eyebrow">{isPersonal ? "SIM LIP GEAP · PERSONAL · FORM BE" : isCompany ? "SOLVER ACADEMY SDN. BHD. · MPERS · FORM C" : "SIM LIP GEAP · SOLE PROPRIETOR · FORM B"}</p><h1>{tab === "overview" ? `Good morning, ${isCompany ? "Solver" : "Sim"}` : tab === "receipts" ? `${currentAccountLabel} receipts` : tab === "bank" ? "Bank reconciliation" : tab === "myinvois" ? "MyInvois records" : tab === "ledger" ? "General Ledger & Trial Balance" : tab === "pl" ? "Profit & Loss" : tab === "balance" ? "Balance Sheet" : tab === "cashflow" ? "Cash Flow Statement" : tab === "filing" ? `Borang ${currentForm} information checklist` : tab === "stamp" ? "Stamp Duty" : tab === "audit" ? "Seven-year Audit Pack" : isPersonal ? "Tax-ready summary" : isCompany ? "Form C tax computation" : "Form B tax summary"}</h1></div>
+          <div><p className="eyebrow">{isPersonal ? "SIM LIP GEAP · PERSONAL · FORM BE" : isCompany ? "SOLVER ACADEMY SDN. BHD. · MPERS · FORM C" : "SIM LIP GEAP · SOLE PROPRIETOR · FORM B"}</p><h1>{tab === "overview" ? `Good morning, ${isCompany ? "Solver" : "Sim"}` : tab === "receipts" ? selectedCategory ? <>{selectedCategory === "Toll Fee" ? "Toll & Parking" : selectedCategory} receipts</> : `${currentAccountLabel} receipts` : tab === "bank" ? "Bank reconciliation" : tab === "myinvois" ? "MyInvois records" : tab === "ledger" ? "General Ledger & Trial Balance" : tab === "pl" ? "Profit & Loss" : tab === "balance" ? "Balance Sheet" : tab === "cashflow" ? "Cash Flow Statement" : tab === "filing" ? `Borang ${currentForm} information checklist` : tab === "stamp" ? "Stamp Duty" : tab === "audit" ? "Seven-year Audit Pack" : isPersonal ? "Tax-ready summary" : isCompany ? "Form C tax computation" : "Form B tax summary"}</h1></div>
           <div className="header-actions"><div className="language-switch" role="group" aria-label="Language"><Languages /><button className={language === "zh" ? "active" : ""} aria-pressed={language === "zh"} onClick={() => setLanguage("zh")}>中文</button><button className={language === "en" ? "active" : ""} aria-pressed={language === "en"} onClick={() => setLanguage("en")}>EN</button></div><button className="icon-btn" aria-label="Notifications"><Bell /></button><button className="primary" onClick={() => setUploadOpen(true)}><Plus /> Upload receipt</button></div>
         </header>
 
@@ -1004,7 +1008,7 @@ export default function Home() {
               { category: "Medical" as Category, note: "Medical treatment and eligible care" }, { category: "Lifestyle" as Category, note: "Books, devices and eligible lifestyle items" }, { category: "Education" as Category, note: "Eligible self-education fees" }, { category: "Insurance" as Category, note: "Life and medical insurance records" }, { category: "EPF & SOCSO" as Category, note: "Contribution statements" }, { category: "Zakat" as Category, note: "Zakat payment receipts" }
             ] : [
               { category: "Petrol" as Category, note: "Business travel, toll and parking" }, { category: "Stationery" as Category, note: "Office supplies and printing" }, { category: "Mobile" as Category, note: "Business-use phone and internet" }, { category: "Software & Subscriptions" as Category, note: "Cloud tools and business software" }, { category: "Advertising & Marketing" as Category, note: "Ads, design and promotion" }, { category: "Professional Fees" as Category, note: "Accounting, audit and legal services" }
-            ]).map((item) => { const Icon = categoryMeta[item.category].icon; return <article key={item.category}><span className={`cat-icon ${categoryMeta[item.category].tone}`}><Icon /></span><div><strong>{item.category}</strong><small>{item.note}</small></div><ChevronRight /></article>; })}</div><p className="guide-disclaimer"><AlertCircle /> Categories are record-keeping suggestions. Final eligibility depends on the relevant YA rules and supporting evidence.</p></section>
+            ]).map((item) => { const Icon = categoryMeta[item.category].icon; return <button type="button" key={item.category} onClick={() => openCategory(item.category)} aria-label={`View ${item.category} receipts`}><span className={`cat-icon ${categoryMeta[item.category].tone}`}><Icon /></span><div><strong>{item.category}</strong><small>{item.note}</small></div><ChevronRight /></button>; })}</div><p className="guide-disclaimer"><AlertCircle /> Categories are record-keeping suggestions. Final eligibility depends on the relevant YA rules and supporting evidence.</p></section>
 
             <section className="metric-grid">
               <article><div className="metric-icon mint"><WalletCards /></div><span>Total expenses</span><strong>{currency(totals.total)}</strong><small>{entityReceipts.length ? "Current selected account" : "No receipts recorded yet"}</small></article>
@@ -1014,21 +1018,20 @@ export default function Home() {
             </section>
 
             <section className="two-column">
-              <div className="panel spending-panel"><div className="panel-head"><div><h3>Spending by category</h3><p>{isPersonal ? "Sim Lip Geap · Personal" : isCompany ? "Solver Academy · Sdn. Bhd." : "Sim Lip Geap · Sole proprietor"}</p></div><button>Jul 2026 <ChevronDown /></button></div><div className="category-bars">
-                {(isPersonal ? ["Medical", "Lifestyle", "Insurance", "Zakat", "Food & Beverage"] as Category[] : ["Advertising & Marketing", "Petrol", "Mobile", "Software & Subscriptions", "Stationery"] as Category[]).map((category) => {
-                  const amount = entityReceipts.filter((r) => r.category === category).reduce((sum, r) => sum + r.amount, 0);
+              <div className="panel spending-panel"><div className="panel-head"><div><h3>Spending by category</h3><p>Click a category to view its dates, amounts and bills</p></div><span className="category-count">{categoryBreakdown.length} categories</span></div><div className="category-bars">
+                {categoryBreakdown.map(({ category, amount, count }) => {
                   const Icon = categoryMeta[category].icon;
-                  return <div className="bar-row" key={category}><span className={`cat-icon ${categoryMeta[category].tone}`}><Icon /></span><div><span>{category}</span><div className="bar"><i style={{ width: `${Math.max(8, Math.min(100, (amount / Math.max(totals.total, 1)) * 180))}%` }}></i></div></div><strong>{currency(amount)}</strong></div>;
+                  return <button type="button" className="bar-row" key={category} onClick={() => openCategory(category)} aria-label={`View ${category} receipts`}><span className={`cat-icon ${categoryMeta[category].tone}`}><Icon /></span><div><span>{category === "Toll Fee" ? "Toll & Parking" : category}<small>{count} receipt{count === 1 ? "" : "s"}</small></span><div className="bar"><i style={{ width: `${Math.max(8, Math.min(100, (amount / Math.max(totals.total, 1)) * 180))}%` }}></i></div></div><strong>{currency(amount)}</strong><ChevronRight /></button>;
                 })}
               </div></div>
               <div className="panel tax-readiness"><div className="panel-head"><div><h3>Tax readiness</h3><p>Form {currentForm} · YA 2026</p></div><span className="score">{filingPercent}%</span></div><div className="donut" style={{ background: `conic-gradient(var(--green) 0 ${filingPercent}%, #edf0ed ${filingPercent}%)` }}><div><strong>{filingPercent}%</strong><span>ready</span></div></div><ul><li><span className="dot green"></span><div><b>{entityReceipts.length - totals.review} receipts categorised</b><small>{isPersonal ? "Relief and personal spend separated" : isCompany ? "Company records documented" : "Sole proprietor records documented"}</small></div><Check /></li><li><span className="dot orange"></span><div><b>{totals.review} receipt needs attention</b><small>{isPersonal ? "Relief eligibility not confirmed" : "Business purpose not confirmed"}</small></div><ChevronRight /></li></ul><button className="text-button" onClick={() => setTab(isCompany ? "ledger" : "tax")}>{isCompany ? "Open General Ledger" : "Open tax checklist"} <ArrowUpRight /></button></div>
             </section>
 
-            <ReceiptTable entity={entity} receipts={filtered.slice(0, 5)} query={query} setQuery={setQuery} onViewAll={() => setTab("receipts")} onEdit={(receipt) => { setDraft(receipt); setUploadOpen(true); }} onOpenEvidence={openReceiptEvidence} onExport={exportCsv} />
+            <ReceiptTable entity={entity} receipts={filtered.slice(0, 5)} query={query} setQuery={setQuery} onViewAll={() => { setSelectedCategory(null); setTab("receipts"); }} onEdit={(receipt) => { setDraft(receipt); setUploadOpen(true); }} onOpenEvidence={openReceiptEvidence} onExport={exportCsv} />
           </div>
         )}
 
-        {tab === "receipts" && <div className="content"><ReceiptTable entity={entity} receipts={filtered} query={query} setQuery={setQuery} onViewAll={() => { setDraft(null); setUploadOpen(true); }} onEdit={(receipt) => { setDraft(receipt); setUploadOpen(true); }} onOpenEvidence={openReceiptEvidence} onExport={exportCsv} full /></div>}
+        {tab === "receipts" && <div className="content receipt-page">{selectedCategory ? <CategoryReceiptHero category={selectedCategory} receipts={selectedCategoryReceipts} onBack={() => { setSelectedCategory(null); setQuery(""); }} onUpload={() => { setDraft(null); setUploadOpen(true); }} /> : <ReceiptWorkflow entity={entity} receiptCount={entityReceipts.length} evidenceCount={entityReceipts.filter((receipt) => receipt.hasEvidence).length} onUpload={() => { setDraft(null); setUploadOpen(true); }} />}<ReceiptTable entity={entity} receipts={filtered} query={query} setQuery={setQuery} onViewAll={() => { setDraft(null); setUploadOpen(true); }} onEdit={(receipt) => { setDraft(receipt); setUploadOpen(true); }} onOpenEvidence={openReceiptEvidence} onExport={exportCsv} full activeCategory={selectedCategory} /></div>}
 
         {tab === "stamp" && <StampDutyWorkspace entity={entity} language={language} onToast={stampToast} />}
 
@@ -1138,31 +1141,76 @@ export default function Home() {
   );
 }
 
-function ReceiptTable({ entity, receipts, query, setQuery, onViewAll, onEdit, onOpenEvidence, onExport, full = false }: { entity: Entity; receipts: Receipt[]; query: string; setQuery: (v: string) => void; onViewAll: () => void; onEdit: (receipt: Receipt) => void; onOpenEvidence: (receipt: Receipt) => void; onExport: () => void; full?: boolean }) {
+function ReceiptWorkflow({ entity, receiptCount, evidenceCount, onUpload }: { entity: Entity; receiptCount: number; evidenceCount: number; onUpload: () => void }) {
+  const account = entity === "company" ? "Solver Academy Sdn. Bhd." : entity === "business" ? "Sim Lip Geap · Form B" : "Sim Lip Geap · Personal";
+  return <section className="receipt-workflow">
+    <div className="receipt-workflow-copy">
+      <span className="pill"><Sparkles /> Smart PDF sorting</span>
+      <h2>Upload once. AMS separates every receipt.</h2>
+      <p>One PDF may contain food, petrol and toll receipts. AMS cuts each slip into its own PDF, reads the details and suggests a category for you to confirm.</p>
+      <div className="receipt-workflow-actions"><button className="primary" onClick={onUpload}><FileUp /> Upload PDF or photo</button><span><ShieldCheck /> Saved to {account}</span></div>
+    </div>
+    <ol className="receipt-steps" aria-label="Receipt processing steps">
+      <li><span>1</span><FileUp /><div><strong>Upload</strong><small>One PDF, many receipts</small></div></li>
+      <li><span>2</span><ScanLine /><div><strong>Split & classify</strong><small>Merchant, date, amount and category</small></div></li>
+      <li><span>3</span><FileText /><div><strong>Click the amount</strong><small>Open the exact receipt PDF</small></div></li>
+    </ol>
+    <div className="receipt-workflow-stats"><span><strong>{receiptCount}</strong> receipts in this account</span><span><strong>{evidenceCount}</strong> clickable PDF records</span></div>
+  </section>;
+}
+
+function CategoryReceiptHero({ category, receipts, onBack, onUpload }: { category: Category; receipts: Receipt[]; onBack: () => void; onUpload: () => void }) {
+  const Icon = categoryMeta[category].icon;
+  const label = category === "Toll Fee" ? "Toll & Parking" : category;
+  const total = receipts.reduce((sum, receipt) => sum + receipt.amount, 0);
+  const pdfCount = receipts.filter((receipt) => receipt.hasEvidence).length;
+  const latestDate = receipts[0]?.date ?? "No receipt yet";
+  return <section className="category-detail-hero">
+    <button type="button" className="category-back" onClick={onBack}><ChevronRight /> All receipt categories</button>
+    <div className="category-detail-main">
+      <span className={`category-detail-icon ${categoryMeta[category].tone}`}><Icon /></span>
+      <div><span>Category detail</span><h2>{label}</h2><p>See every transaction date, amount and linked bill in one place.</p></div>
+      <button className="primary" onClick={onUpload}><Plus /> Add receipt</button>
+    </div>
+    <div className="category-detail-stats">
+      <article><span>Total amount</span><strong>{currency(total)}</strong></article>
+      <article><span>Receipts</span><strong>{receipts.length}</strong></article>
+      <article><span>PDF bills</span><strong>{pdfCount}</strong></article>
+      <article><span>Latest date</span><strong>{latestDate}</strong></article>
+    </div>
+  </section>;
+}
+
+function ReceiptTable({ entity, receipts, query, setQuery, onViewAll, onEdit, onOpenEvidence, onExport, full = false, activeCategory = null }: { entity: Entity; receipts: Receipt[]; query: string; setQuery: (v: string) => void; onViewAll: () => void; onEdit: (receipt: Receipt) => void; onOpenEvidence: (receipt: Receipt) => void; onExport: () => void; full?: boolean; activeCategory?: Category | null }) {
   const accountName = entity === "company" ? "Solver Academy" : "Sim Lip Geap";
   const accountKind = entity === "personal" ? "personal" : entity === "company" ? "company" : "sole proprietor";
-  return <section className="panel receipt-list">
-    <div className="panel-head"><div><h3>{full ? `${accountName} receipts` : "Recent receipts"}</h3><p>{full ? `Only ${accountKind} records are shown` : "Automatically extracted and categorised"}</p></div><div className="table-actions">{full && <><label className="search"><Search /><input value={query} onChange={(e) => setQuery(e.target.value)} placeholder="Search receipts" /></label><button className="text-button" onClick={onExport}><Download /> Export CSV</button></>}<button className="text-button" onClick={onViewAll}>{full ? "Add receipt" : "View all"} <ArrowUpRight /></button></div></div>
-    <div className="table-wrap"><table><thead><tr><th>Merchant</th><th>Date</th><th>Category</th><th>Tax use</th><th>{entity === "personal" ? "Account" : "Business use"}</th><th>{entity === "personal" ? "Amount" : "Claimable"}</th><th></th></tr></thead><tbody>{receipts.map((receipt) => {
+  const categoryLabel = activeCategory === "Toll Fee" ? "Toll & Parking" : activeCategory;
+  return <section className={`panel receipt-list ${full ? "receipt-list-full" : ""}`}>
+    <div className="panel-head"><div><h3>{full ? activeCategory ? <>{categoryLabel} · <span>Receipt details</span></> : `${accountName} receipts` : "Recent receipts"}</h3><p>{full ? activeCategory ? <>{receipts.length} {receipts.length === 1 ? "item in this category" : "items in this category"}</> : `Only ${accountKind} records are shown` : "Automatically extracted and categorised"}</p></div><div className="table-actions">{full && <><label className="search"><Search /><input value={query} onChange={(e) => setQuery(e.target.value)} placeholder="Search receipts" /></label><button className="text-button" onClick={onExport}><Download /> Export CSV</button></>}<button className="text-button" onClick={onViewAll}>{full ? "Add receipt" : "View all"} <ArrowUpRight /></button></div></div>
+    {full && <div className="receipt-click-hint"><FileText /><span><strong>Need the original?</strong> Click any blue amount with the PDF icon to open that exact receipt.</span></div>}
+    <div className="table-wrap"><table className="receipt-table"><thead><tr><th>Merchant</th><th>Date</th><th>Category</th><th>Tax use</th><th>{entity === "personal" ? "Account" : "Business use"}</th><th>{entity === "personal" ? "Amount" : "Claimable"}</th><th></th></tr></thead><tbody>{receipts.map((receipt) => {
       const Icon = categoryMeta[receipt.category].icon;
       const shownAmount = entity === "personal" ? receipt.amount : receipt.taxUse === "Business" ? receipt.amount * receipt.businessUse / 100 : 0;
-      return <tr key={receipt.id}><td><div className="merchant"><span className={`cat-icon ${categoryMeta[receipt.category].tone}`}><Icon /></span><div><b>{receipt.merchant}</b><small>{receipt.myInvoisUuid ? `MyInvois ${receipt.myInvoisUuid}` : receipt.hasEvidence ? "PDF evidence linked" : `${receipt.confidence}% category match`}</small></div></div></td><td>{receipt.date}</td><td><span className="category-label">{receipt.category === "Toll Fee" ? "Toll & Parking" : receipt.category}</span></td><td><span className={`tax-use ${receipt.taxUse.toLowerCase()}`}>{receipt.taxUse === "Review" ? <AlertCircle /> : receipt.taxUse === "Relief" ? <FileCheck2 /> : null}{receipt.taxUse}</span></td><td>{entity === "personal" ? "Personal" : receipt.taxUse === "Business" ? `${receipt.businessUse}%` : "—"}</td><td>{receipt.hasEvidence ? <button className="receipt-amount-link" title="Open this receipt PDF" onClick={() => onOpenEvidence(receipt)}>{currency(receipt.amount)} <FileText /></button> : <strong>{currency(shownAmount)}</strong>}{entity !== "personal" && <small className="gross-amount">{receipt.hasEvidence ? `claimable ${currency(shownAmount)}` : `gross ${currency(receipt.amount)}`}</small>}</td><td><button className="more" aria-label={`Edit ${receipt.merchant}`} onClick={() => onEdit(receipt)}><Pencil /></button></td></tr>;
-    })}</tbody></table></div>
+      return <tr key={receipt.id}><td data-label="Merchant"><div className="merchant"><span className={`cat-icon ${categoryMeta[receipt.category].tone}`}><Icon /></span><div><b>{receipt.merchant}</b><small>{receipt.myInvoisUuid ? `MyInvois ${receipt.myInvoisUuid}` : receipt.hasEvidence ? "PDF evidence linked" : `${receipt.confidence}% category match`}</small></div></div></td><td data-label="Date">{receipt.date}</td><td data-label="Category"><span className="category-label">{receipt.category === "Toll Fee" ? "Toll & Parking" : receipt.category}</span></td><td data-label="Tax use"><span className={`tax-use ${receipt.taxUse.toLowerCase()}`}>{receipt.taxUse === "Review" ? <AlertCircle /> : receipt.taxUse === "Relief" ? <FileCheck2 /> : null}{receipt.taxUse}</span></td><td data-label={entity === "personal" ? "Account" : "Business use"}>{entity === "personal" ? "Personal" : receipt.taxUse === "Business" ? `${receipt.businessUse}%` : "—"}</td><td data-label={entity === "personal" ? "Amount" : "Claimable"} className="receipt-money-cell">{receipt.hasEvidence ? <button className="receipt-amount-link" aria-label={`Open ${currency(receipt.amount)} receipt PDF for ${receipt.merchant}`} title="Open this receipt PDF" onClick={() => onOpenEvidence(receipt)}><b>{currency(receipt.amount)}</b><span>View PDF</span><FileText /></button> : <strong>{currency(shownAmount)}</strong>}{entity !== "personal" && <small className="gross-amount">{receipt.hasEvidence ? `claimable ${currency(shownAmount)}` : `gross ${currency(receipt.amount)}`}</small>}</td><td className="receipt-edit-cell"><button className="more" aria-label={`Edit ${receipt.merchant}`} onClick={() => onEdit(receipt)}><Pencil /></button></td></tr>;
+    })}{!receipts.length && <tr className="receipt-empty-row"><td colSpan={7}><ReceiptText /><strong>No receipts found</strong><small>Upload a PDF or clear the search to see receipt records.</small></td></tr>}</tbody></table></div>
   </section>;
 }
 
 function PdfReviewModal({ drafts, processing, onChange, onRemove, onSplit, onSave, onClose }: { drafts: PdfDraft[]; processing: boolean; onChange: (index: number, receipt: Receipt) => void; onRemove: (index: number) => void; onSplit: (index: number, direction: "horizontal" | "vertical", percent: number) => void; onSave: () => void; onClose: () => void }) {
   const [splitPercent, setSplitPercent] = useState(50);
   const categories = Object.keys(categoryMeta) as Category[];
+  const categorised = drafts.filter(({ receipt }) => receipt.category !== "Others").length;
+  const needsDetails = drafts.filter(({ receipt, region }) => !receipt.amount || !extractReceiptDate(region.text)).length;
   return <div className="modal-backdrop" role="dialog" aria-modal="true" aria-labelledby="pdf-review-title"><div className="modal pdf-review-modal">
-    <div className="modal-head"><div><span className="pill"><FileText /> PDF receipt split</span><h2 id="pdf-review-title">Review {drafts.length} detected receipt{drafts.length === 1 ? "" : "s"}</h2><p>Each card becomes a separate PDF. Confirm the slip, gross amount, date and category before saving.</p></div><button className="icon-btn" onClick={onClose} disabled={processing} aria-label="Close"><X /></button></div>
+    <div className="modal-head"><div><span className="pill"><FileText /> PDF receipt split</span><h2 id="pdf-review-title">{drafts.length} separate receipt{drafts.length === 1 ? "" : "s"} detected</h2><p>AMS has cut and classified the file. Review the highlighted details, then save each slip as its own PDF.</p></div><button className="icon-btn" onClick={onClose} disabled={processing} aria-label="Close"><X /></button></div>
+    <div className="pdf-review-summary"><article><ScanLine /><span>Detected<strong>{drafts.length} slips</strong></span></article><article><Sparkles /><span>Auto-classified<strong>{categorised} of {drafts.length}</strong></span></article><article className={needsDetails ? "warning" : "ready"}>{needsDetails ? <AlertCircle /> : <Check />}<span>Need details<strong>{needsDetails}</strong></span></article></div>
     <div className="pdf-review-note"><AlertCircle /> OCR and auto-splitting may be wrong. Split a combined page below; do not save until each preview contains exactly one receipt. Business tax use starts at Review. PDF evidence is stored in this browser; export a backup from Audit Pack.</div>
     <div className="pdf-split-control"><label>Split position <input type="range" min="20" max="80" value={splitPercent} onChange={(event) => setSplitPercent(Number(event.target.value))} /> {splitPercent}%</label><small>Use horizontal for receipts stacked top-to-bottom, vertical for side-by-side receipts.</small></div>
     <div className="pdf-draft-list">{drafts.map(({ receipt, region }, index) => <section className="pdf-draft-card" key={receipt.id}>
       <div className="pdf-preview">{/* The preview is a browser-local data URL, not a remotely optimizable image. */}
         {/* eslint-disable-next-line @next/next/no-img-element */}
         <img src={region.preview} alt={`PDF page ${region.page}, receipt ${index + 1}`} /><span>Page {region.page} · slip {index + 1}</span></div>
-      <div className="pdf-draft-fields"><div className="pdf-card-head"><strong>Receipt {index + 1}</strong><button type="button" onClick={() => onRemove(index)} disabled={processing}>Remove</button></div>
+      <div className="pdf-draft-fields"><div className="pdf-card-head"><div><strong>Receipt {index + 1}</strong><span className={`pdf-auto-chip ${receipt.category === "Others" ? "review" : "ready"}`}><Sparkles /> {receipt.category === "Others" ? "Choose category" : `${receipt.confidence}% category match`}</span></div><button type="button" onClick={() => onRemove(index)} disabled={processing}>Remove</button></div>
         <div className="form-row"><label>Merchant<input value={receipt.merchant} maxLength={160} onChange={(event) => onChange(index, { ...receipt, merchant: event.target.value })} /></label><label>Date<input type="date" value={isoDate(receipt.date)} onChange={(event) => onChange(index, { ...receipt, date: displayDate(event.target.value) })} /></label></div>
         {!extractReceiptDate(region.text) && <small className="pdf-ocr-warning">Date was not detected. Today is shown as a placeholder; enter the date printed on this slip.</small>}
         <div className="form-row"><label>Gross amount (RM)<input type="number" min="0.01" step="0.01" value={receipt.amount || ""} onChange={(event) => onChange(index, { ...receipt, amount: Number(event.target.value) })} /></label><label>Category<select value={receipt.category} onChange={(event) => onChange(index, { ...receipt, category: event.target.value as Category })}>{categories.map((category) => <option key={category} value={category}>{category === "Toll Fee" ? "Toll & Parking" : category}</option>)}</select></label></div>
@@ -1171,7 +1219,7 @@ function PdfReviewModal({ drafts, processing, onChange, onRemove, onSplit, onSav
         <div className="pdf-card-actions"><button type="button" disabled={processing} onClick={() => onSplit(index, "horizontal", splitPercent)}>Split top / bottom</button><button type="button" disabled={processing} onClick={() => onSplit(index, "vertical", splitPercent)}>Split left / right</button></div>
       </div>
     </section>)}</div>
-    <div className="modal-actions"><button className="secondary" disabled={processing} onClick={onClose}>Cancel</button><button className="primary" disabled={processing || !drafts.length} onClick={onSave}>{processing ? <LoaderCircle className="spinner-inline" /> : <Save />} Save {drafts.length} separate PDFs</button></div>
+    <div className="modal-actions"><span className="save-explainer"><FileText /> Amounts become clickable after saving</span><button className="secondary" disabled={processing} onClick={onClose}>Cancel</button><button className="primary" disabled={processing || !drafts.length} onClick={onSave}>{processing ? <LoaderCircle className="spinner-inline" /> : <Save />} Save {drafts.length} separate PDFs</button></div>
   </div></div>;
 }
 
@@ -1180,10 +1228,11 @@ function UploadModal({ entity, draft, setDraft, processing, progress, fileRef, o
   const businessCategories: Category[] = ["Food & Beverage", "Stationery", "Petrol", "Toll Fee", "Mobile", "Entertainment", "Office Rent", "Software & Subscriptions", "Professional Fees", "Advertising & Marketing", "Utilities", "Others"];
   const draftAccount = (draft?.entity || entity) === "personal" ? "Sim Lip Geap · Personal" : (draft?.entity || entity) === "company" ? "Solver Academy · Sdn. Bhd." : "Sim Lip Geap · Sole proprietor";
   return <div className="modal-backdrop" role="dialog" aria-modal="true" aria-labelledby="upload-title"><div className="modal">
-    <div className="modal-head"><div><span className="pill"><Sparkles /> {draftAccount}</span><h2 id="upload-title">{draft ? "Review receipt" : "Upload a receipt"}</h2><p>This receipt will stay inside the selected account.</p></div><button className="icon-btn" onClick={onClose} aria-label="Close"><X /></button></div>
+    <div className="modal-head"><div><span className="pill"><Sparkles /> {draftAccount}</span><h2 id="upload-title">{draft ? "Review receipt" : "Upload receipts"}</h2><p>{draft ? "Confirm the extracted details before saving." : "Upload one file — AMS will separate and organise the receipts inside it."}</p></div><button className="icon-btn" onClick={onClose} aria-label="Close"><X /></button></div>
+    {!draft && <div className="upload-flow"><span className="active"><b>1</b> Upload</span><ChevronRight /><span><b>2</b> Auto split & classify</span><ChevronRight /><span><b>3</b> Save & click amount</span></div>}
     {!draft ? <button className={`dropzone ${processing ? "processing" : ""}`} disabled={processing} onClick={() => fileRef.current?.click()} onDragOver={(e) => e.preventDefault()} onDrop={(e) => { e.preventDefault(); const file = e.dataTransfer.files[0]; if (file) onFile(file); }}>
       <input ref={fileRef} type="file" accept="application/pdf,.pdf,image/png,image/jpeg,image/webp" hidden onChange={(e) => { if (e.target.files?.[0]) onFile(e.target.files[0]); e.target.value = ""; }} />
-      {processing ? <><LoaderCircle className="spinner" /><strong>Reading your receipt…</strong><span>Detecting separate slips, amount and category</span><div className="progress"><i style={{ width: `${progress}%` }}></i></div><small>{progress}% complete</small></> : <><span className="upload-icon"><Paperclip /></span><strong>Drop your receipt PDF here</strong><span>or click to choose PDF / photo</span><small>PDF up to 20 MB · JPG, PNG or WEBP up to 10 MB</small></>}
+      {processing ? <><LoaderCircle className="spinner" /><strong>Splitting and reading your receipts…</strong><span>Detecting each slip, merchant, date, amount and category</span><div className="progress"><i style={{ width: `${progress}%` }}></i></div><small>{progress}% complete</small></> : <><span className="upload-icon"><Paperclip /></span><strong>Drop one PDF with one or many receipts</strong><span>or click to choose PDF / receipt photo</span><small>Automatic top-to-bottom, side-by-side and multi-page splitting · PDF up to 20 MB</small></>}
     </button> : <form onSubmit={onSave} className="receipt-form">
       <div className="detected"><span><Check /></span><div><strong>{draft.entity === "personal" ? "Personal account detected" : draft.entity === "company" ? "Sdn. Bhd. account detected" : "Sole proprietor account detected"}</strong><small>{draft.confidence}% category confidence · Please confirm</small></div></div>
       <div className="form-row"><label>Merchant<input maxLength={160} value={draft.merchant} onChange={(e) => setDraft({ ...draft, merchant: e.target.value })} required /></label><label>Receipt date<input type="date" value={isoDate(draft.date)} onChange={(e) => setDraft({ ...draft, date: displayDate(e.target.value) })} required /></label></div>
