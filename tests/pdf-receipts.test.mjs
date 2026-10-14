@@ -1,8 +1,7 @@
 import assert from "node:assert/strict";
 import test from "node:test";
 
-import { horizontalReceiptBands, receiptRegionsFromPixels, verticalReceiptBands } from "../app/lib/pdf-receipts.ts";
-import { classifyReceiptText } from "../app/lib/receipt-classification.ts";
+import { classifyReceiptText, horizontalReceiptBands, receiptRegionsFromPixels, verticalReceiptBands } from "../app/lib/pdf-receipts.ts";
 
 function pageWithReceipts(rectangles, width = 200, height = 500) {
   const pixels = new Uint8ClampedArray(width * height * 4).fill(255);
