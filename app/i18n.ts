@@ -610,6 +610,13 @@ export function translateToChinese(value: string) {
   const trailing = value.match(/\s*$/)?.[0] ?? "";
   const core = value.trim();
   if (!core) return value;
+  if (core.endsWith(" receipts")) {
+    const category = core.slice(0, -" receipts".length);
+    const translatedCategory = exact[category];
+    if (translatedCategory && translatedCategory !== category) {
+      return `${leading}${translatedCategory}收据${trailing}`;
+    }
+  }
   let translated = exact[core] ?? core;
   if (translated === core) {
     for (const [from, to] of replacements) translated = translated.replaceAll(from, to);
