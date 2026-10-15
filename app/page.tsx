@@ -50,6 +50,7 @@ import {
 } from "lucide-react";
 import { CSSProperties, FormEvent, useCallback, useEffect, useMemo, useRef, useState } from "react";
 import CompanyAccounting, { CompanyAccountingView } from "./components/company-accounting";
+import LhdnComplianceCentre from "./components/lhdn-compliance-centre";
 import StampDutyWorkspace from "./components/stamp-duty-workspace";
 import { balanceSheet, cashFlowStatement, chartOfAccounts, profitAndLoss, sanitizeJournalEntries, seedJournalEntries, seedSoleProprietorJournalEntries, soleProprietorChartOfAccounts, taxComputation } from "./lib/accounting";
 import type { AccountingReceipt, JournalEntry } from "./lib/accounting";
@@ -417,7 +418,7 @@ export default function Home() {
   const [receipts, setReceipts] = useState(seedReceipts);
   const [receiptsReady, setReceiptsReady] = useState(false);
   const [entity, setEntity] = useState<Entity>("company");
-  const [tab, setTab] = useState<"overview" | "receipts" | "bank" | "myinvois" | "ledger" | "pl" | "balance" | "cashflow" | "filing" | "tax" | "stamp" | "audit">("overview");
+  const [tab, setTab] = useState<"overview" | "receipts" | "bank" | "myinvois" | "ledger" | "pl" | "balance" | "cashflow" | "compliance" | "filing" | "tax" | "stamp" | "audit">("overview");
   const [activeForm, setActiveForm] = useState<"B" | "C" | "BE">("C");
   const [uploadOpen, setUploadOpen] = useState(false);
   const [processing, setProcessing] = useState(false);
@@ -978,6 +979,7 @@ export default function Home() {
           {!isPersonal && <button className={tab === "pl" ? "active" : ""} onClick={() => setTab("pl")}><TrendingUp /> Profit &amp; Loss</button>}
           {!isPersonal && <button className={tab === "balance" ? "active" : ""} onClick={() => setTab("balance")}><BarChart3 /> Balance Sheet</button>}
           {!isPersonal && <button className={tab === "cashflow" ? "active" : ""} onClick={() => setTab("cashflow")}><CircleDollarSign /> Cash Flow</button>}
+          <button className={tab === "compliance" ? "active" : ""} onClick={() => setTab("compliance")}><ShieldCheck /> LHDN Compliance</button>
           <button className={tab === "filing" ? "active" : ""} onClick={() => setTab("filing")}><ClipboardCheck /> Form checklist <span className="nav-progress">{filingPercent}%</span></button>
           <button className={tab === "tax" ? "active" : ""} onClick={() => setTab("tax")}><FileText /> {isPersonal ? "Tax Report" : isCompany ? "Form C & Tax" : "Form B Tax"}</button>
           <button className={tab === "stamp" ? "active" : ""} onClick={() => setTab("stamp")}><FileCheck2 /> Stamp Duty</button>
@@ -993,7 +995,7 @@ export default function Home() {
       <section className="workspace">
         <header>
           <button className="mobile-menu" aria-label="Open menu" onClick={() => setMenuOpen(true)}><Menu /></button>
-          <div><p className="eyebrow">{isPersonal ? "SIM LIP GEAP · PERSONAL · FORM BE" : isCompany ? "SOLVER ACADEMY SDN. BHD. · MPERS · FORM C" : "SIM LIP GEAP · SOLE PROPRIETOR · FORM B"}</p><h1>{tab === "overview" ? `Good morning, ${isCompany ? "Solver" : "Sim"}` : tab === "receipts" ? selectedCategory ? `${selectedCategory === "Toll Fee" ? "Toll & Parking" : selectedCategory} receipts` : `${currentAccountLabel} receipts` : tab === "bank" ? "Bank reconciliation" : tab === "myinvois" ? "MyInvois records" : tab === "ledger" ? "General Ledger & Trial Balance" : tab === "pl" ? "Profit & Loss" : tab === "balance" ? "Balance Sheet" : tab === "cashflow" ? "Cash Flow Statement" : tab === "filing" ? `Borang ${currentForm} information checklist` : tab === "stamp" ? "Stamp Duty" : tab === "audit" ? "Seven-year Audit Pack" : isPersonal ? "Tax-ready summary" : isCompany ? "Form C tax computation" : "Form B tax summary"}</h1></div>
+          <div><p className="eyebrow">{isPersonal ? "SIM LIP GEAP · PERSONAL · FORM BE" : isCompany ? "SOLVER ACADEMY SDN. BHD. · MPERS · FORM C" : "SIM LIP GEAP · SOLE PROPRIETOR · FORM B"}</p><h1>{tab === "overview" ? `Good morning, ${isCompany ? "Solver" : "Sim"}` : tab === "receipts" ? selectedCategory ? `${selectedCategory === "Toll Fee" ? "Toll & Parking" : selectedCategory} receipts` : `${currentAccountLabel} receipts` : tab === "bank" ? "Bank reconciliation" : tab === "myinvois" ? "MyInvois records" : tab === "ledger" ? "General Ledger & Trial Balance" : tab === "pl" ? "Profit & Loss" : tab === "balance" ? "Balance Sheet" : tab === "cashflow" ? "Cash Flow Statement" : tab === "compliance" ? "LHDN Compliance Centre" : tab === "filing" ? `Borang ${currentForm} information checklist` : tab === "stamp" ? "Stamp Duty" : tab === "audit" ? "Seven-year Audit Pack" : isPersonal ? "Tax-ready summary" : isCompany ? "Form C tax computation" : "Form B tax summary"}</h1></div>
           <div className="header-actions"><div className="language-switch" role="group" aria-label="Language"><Languages /><button className={language === "zh" ? "active" : ""} aria-pressed={language === "zh"} onClick={() => setLanguage("zh")}>中文</button><button className={language === "en" ? "active" : ""} aria-pressed={language === "en"} onClick={() => setLanguage("en")}>EN</button></div><button className="icon-btn" aria-label="Notifications"><Bell /></button><button className="primary" onClick={() => setUploadOpen(true)}><Plus /> Upload receipt</button></div>
         </header>
 
@@ -1052,6 +1054,8 @@ export default function Home() {
         )}
 
         {!isPersonal && (["ledger", "pl", "balance", "cashflow", "tax"] as string[]).includes(tab) && <CompanyAccounting key={isCompany ? "company-ledger" : "sole-proprietor-ledger"} mode={isCompany ? "company" : "soleProprietor"} view={tab as CompanyAccountingView} receipts={isCompany ? companyAccountingReceipts : soleProprietorAccountingReceipts} onToast={(message) => { setToast(message); setTimeout(() => setToast(""), 3600); }} />}
+
+        {tab === "compliance" && <LhdnComplianceCentre key={`${entity}-${language}`} entity={entity} language={language} filingPercent={filingPercent} receiptCount={entityReceipts.length} evidenceCount={entityReceipts.filter((receipt) => receipt.hasEvidence).length} reviewCount={entityReceipts.filter((receipt) => receipt.taxUse === "Review").length} />}
 
         {tab === "filing" && (
           <div className="content filing-page">

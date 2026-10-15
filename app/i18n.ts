@@ -25,6 +25,8 @@ const exact: Record<string, string> = {
   "MyInvois records": "MyInvois 记录",
   "MyInvois": "MyInvois",
   "Form checklist": "报税资料清单",
+  "LHDN Compliance": "LHDN 合规",
+  "LHDN Compliance Centre": "LHDN 合规中心",
   "Tax Report": "税务报表",
   "Audit Pack": "审计资料包",
   "Stamp Duty": "印花税",
