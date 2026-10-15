@@ -191,7 +191,7 @@ export default function LhdnComplianceCentre({ entity, language, filingPercent, 
         <div className="compliance-tool-head"><span className="mini-icon green"><CalendarClock /></span><div><span>{zh ? "截止日期" : "DEADLINES"}</span><h3>{entity === "company" ? (zh ? "Form C 与 MITRS 计算" : "Form C and MITRS calculator") : (zh ? "年度申报提醒" : "Annual filing reminder")}</h3></div></div>
         {entity === "company" ? <>
           <p className="compliance-tool-intro">{zh ? "输入实际会计期结束日；AMS 会按七个月及其后30天计算准备日期。" : "Enter the actual accounting close. AMS calculates seven months and the following 30-day MITRS period."}</p>
-          <label className="compliance-date-label">{zh ? "会计期结束日" : "Accounting period close"}<input type="date" value={accountingClose} onChange={(event) => setAccountingClose(event.target.value)} /></label>
+          <label className="compliance-date-label">{zh ? "会计期结束日" : "Accounting period close"}<input type="date" value={accountingClose} onInput={(event) => setAccountingClose(event.currentTarget.value)} onChange={(event) => setAccountingClose(event.target.value)} /></label>
           <div className="deadline-list">
             <div><span>Form C</span><strong>{deadlines ? displayDate(deadlines.formCDue, language) : (zh ? "请选择日期" : "Select a date")}</strong><small>{zh ? "会计期结束后七个月" : "Seven months after close"}</small></div>
             <div><span>MITRS</span><strong>{deadlines ? displayDate(deadlines.mitrsDue, language) : (zh ? "请选择日期" : "Select a date")}</strong><small>{zh ? "Form C 法定截止日后30天" : "30 days after statutory Form C due date"}</small></div>
