@@ -1,3 +1,5 @@
+import type { PDFDocumentProxy } from "pdfjs-dist";
+
 export type Crop = { x: number; y: number; width: number; height: number };
 export type PdfRegion = { page: number; crop: Crop; text: string; preview: string; pdf: Blob };
 
@@ -169,21 +171,26 @@ export function receiptRegionsFromPixels(pixels: Uint8ClampedArray, width: numbe
   return verticalReceiptBands(pixels, width, height);
 }
 
+async function renderDocumentPage(pdfDocument: PDFDocumentProxy, pageNumber: number) {
+  const page = await pdfDocument.getPage(pageNumber);
+  const viewport = page.getViewport({ scale: 1.8 });
+  const canvas = document.createElement("canvas");
+  canvas.width = Math.ceil(viewport.width);
+  canvas.height = Math.ceil(viewport.height);
+  const context = canvas.getContext("2d", { willReadFrequently: true });
+  if (!context) throw new Error("This browser cannot render PDF pages.");
+  await page.render({ canvasContext: context, canvas, viewport }).promise;
+  page.cleanup();
+  return canvas;
+}
+
 async function renderPage(file: File, pageNumber: number) {
   const pdfjs = await import("pdfjs-dist");
   pdfjs.GlobalWorkerOptions.workerSrc = new URL("pdfjs-dist/build/pdf.worker.min.mjs", import.meta.url).toString();
   const task = pdfjs.getDocument({ data: new Uint8Array(await file.arrayBuffer()) });
   try {
     const pdfDocument = await task.promise;
-    if (pdfDocument.numPages > 30) throw new Error("This PDF has over 30 pages. Please upload a smaller batch.");
-    const page = await pdfDocument.getPage(pageNumber);
-    const viewport = page.getViewport({ scale: 1.8 });
-    const canvas = document.createElement("canvas");
-    canvas.width = Math.ceil(viewport.width);
-    canvas.height = Math.ceil(viewport.height);
-    const context = canvas.getContext("2d", { willReadFrequently: true });
-    if (!context) throw new Error("This browser cannot render PDF pages.");
-    await page.render({ canvasContext: context, canvas, viewport }).promise;
+    const canvas = await renderDocumentPage(pdfDocument, pageNumber);
     return { canvas, pages: pdfDocument.numPages };
   } finally {
     await task.destroy();
@@ -196,7 +203,6 @@ export async function countPdfPages(file: File): Promise<number> {
   const task = pdfjs.getDocument({ data: new Uint8Array(await file.arrayBuffer()) });
   try {
     const document = await task.promise;
-    if (document.numPages > 30) throw new Error("This PDF has over 30 pages. Please upload a smaller batch.");
     return document.numPages;
   } finally {
     await task.destroy();
@@ -210,8 +216,7 @@ export async function autoRegions(file: File, pageNumber: number): Promise<Crop[
   return receiptRegionsFromPixels(context.getImageData(0, 0, canvas.width, canvas.height).data, canvas.width, canvas.height);
 }
 
-export async function readPdfRegion(file: File, pageNumber: number, crop: Crop): Promise<PdfRegion> {
-  const { canvas } = await renderPage(file, pageNumber);
+async function readCanvasRegion(canvas: HTMLCanvasElement, pageNumber: number, crop: Crop): Promise<PdfRegion> {
   const x = Math.max(0, Math.round(crop.x * canvas.width));
   const y = Math.max(0, Math.round(crop.y * canvas.height));
   const width = Math.max(1, Math.min(canvas.width - x, Math.round(crop.width * canvas.width)));
@@ -239,4 +244,33 @@ export async function readPdfRegion(file: File, pageNumber: number, crop: Crop):
   page.drawImage(image, { x: 0, y: 0, width: page.getWidth(), height: page.getHeight() });
   const pdf = new Blob([Uint8Array.from(await pdfDocument.save())], { type: "application/pdf" });
   return { page: pageNumber, crop, text, preview, pdf };
+}
+
+export async function readPdfRegions(file: File, onPage?: (page: number, pages: number) => void): Promise<PdfRegion[]> {
+  const pdfjs = await import("pdfjs-dist");
+  pdfjs.GlobalWorkerOptions.workerSrc = new URL("pdfjs-dist/build/pdf.worker.min.mjs", import.meta.url).toString();
+  const task = pdfjs.getDocument({ data: new Uint8Array(await file.arrayBuffer()) });
+  try {
+    const pdfDocument = await task.promise;
+    const regions: PdfRegion[] = [];
+    for (let pageNumber = 1; pageNumber <= pdfDocument.numPages; pageNumber++) {
+      const canvas = await renderDocumentPage(pdfDocument, pageNumber);
+      const context = canvas.getContext("2d", { willReadFrequently: true });
+      if (!context) throw new Error("This browser cannot inspect PDF pages.");
+      const crops = receiptRegionsFromPixels(context.getImageData(0, 0, canvas.width, canvas.height).data, canvas.width, canvas.height);
+      for (const crop of crops) regions.push(await readCanvasRegion(canvas, pageNumber, crop));
+      canvas.width = 1;
+      canvas.height = 1;
+      onPage?.(pageNumber, pdfDocument.numPages);
+      await new Promise<void>((resolve) => setTimeout(resolve, 0));
+    }
+    return regions;
+  } finally {
+    await task.destroy();
+  }
+}
+
+export async function readPdfRegion(file: File, pageNumber: number, crop: Crop): Promise<PdfRegion> {
+  const { canvas } = await renderPage(file, pageNumber);
+  return readCanvasRegion(canvas, pageNumber, crop);
 }

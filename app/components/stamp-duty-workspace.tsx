@@ -95,8 +95,8 @@ export default function StampDutyWorkspace({ entity, language, onToast }: { enti
     if (item.paidAt && item.paidAt < item.executedAt || item.submittedAt && item.submittedAt < item.executedAt) {
       onToast(zh ? "提交或付款日期不能早于签署日期。" : "Submission/payment date cannot be before signing date."); return;
     }
-    if (file && (!/\.pdf$/i.test(file.name) || file.size < 1 || file.size > 20 * 1024 * 1024)) {
-      onToast(zh ? "只接受不超过 20 MB 的 PDF。" : "Use a non-empty PDF up to 20 MB."); return;
+    if (file && (!/\.pdf$/i.test(file.name) || file.size < 1)) {
+      onToast(zh ? "请选择非空白 PDF。" : "Use a non-empty PDF."); return;
     }
     if (file && new TextDecoder().decode(await file.slice(0, 5).arrayBuffer()) !== "%PDF-") {
       onToast(zh ? "文件内容不是有效的 PDF。" : "The selected file does not contain a PDF header."); return;

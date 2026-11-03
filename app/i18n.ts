@@ -363,7 +363,7 @@ const exact: Record<string, string> = {
   "Detecting each slip, merchant, date, amount and category": "正在识别每张单据、商家、日期、金额及类别",
   "Drop one PDF with one or many receipts": "把含一张或多张单据的 PDF 拖到这里",
   "or click to choose PDF / receipt photo": "或点击选择 PDF／单据照片",
-  "Automatic top-to-bottom, side-by-side and multi-page splitting · PDF up to 20 MB": "自动识别上下排列、左右并排及多页文件 · PDF 最大 20 MB",
+  "Automatic top-to-bottom, side-by-side and multi-page splitting · no app-set page or file-size limit": "自动识别上下排列、左右并排及多页文件 · 系统不设页数或容量上限",
   "This receipt will stay inside the selected account.": "这张收据只会保存在当前选择的账户。",
   "Reading your receipt…": "正在读取收据…",
   "Extracting merchant, amount and category": "正在识别商家、金额和类别",

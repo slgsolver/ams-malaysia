@@ -55,7 +55,7 @@ import StampDutyWorkspace from "./components/stamp-duty-workspace";
 import { balanceSheet, cashFlowStatement, chartOfAccounts, profitAndLoss, sanitizeJournalEntries, seedJournalEntries, seedSoleProprietorJournalEntries, soleProprietorChartOfAccounts, taxComputation } from "./lib/accounting";
 import type { AccountingReceipt, JournalEntry } from "./lib/accounting";
 import { translateToChinese } from "./i18n";
-import { autoRegions, classifyReceiptText, countPdfPages, readPdfRegion } from "./lib/pdf-receipts";
+import { classifyReceiptText, readPdfRegion, readPdfRegions } from "./lib/pdf-receipts";
 import type { Crop, PdfRegion, ReceiptCategory } from "./lib/pdf-receipts";
 import { getReceiptEvidence, saveReceiptEvidence } from "./lib/receipt-evidence";
 import { loadStampRecords, STAMP_RULE_VERSION } from "./lib/stamp-duty";
@@ -618,8 +618,8 @@ export default function Home() {
 
   async function handleFile(file: File) {
     if (file.type === "application/pdf" || /\.pdf$/i.test(file.name)) {
-      if (file.size <= 0 || file.size > 20 * 1024 * 1024) {
-        setToast("PDF must be between 1 byte and 20 MB.");
+      if (file.size <= 0) {
+        setToast("Choose a non-empty PDF.");
         return;
       }
       setProcessing(true);
@@ -627,16 +627,8 @@ export default function Home() {
       setPdfDrafts([]);
       setProgress(5);
       try {
-        const pages = await countPdfPages(file);
-        const candidates: PdfDraft[] = [];
-        for (let page = 1; page <= pages; page++) {
-          const crops = await autoRegions(file, page);
-          for (const crop of crops) {
-            const region = await readPdfRegion(file, page, crop);
-            candidates.push({ receipt: receiptFromPdfRegion(region, entity, file.name), region });
-          }
-          setProgress(Math.round(5 + page / pages * 90));
-        }
+        const regions = await readPdfRegions(file, (page, pages) => setProgress(Math.round(5 + page / pages * 90)));
+        const candidates = regions.map((region) => ({ receipt: receiptFromPdfRegion(region, entity, file.name), region }));
         setPdfSource(file);
         setPdfDrafts(candidates);
         setProgress(100);
@@ -1236,7 +1228,7 @@ function UploadModal({ entity, draft, setDraft, processing, progress, fileRef, o
     {!draft && <div className="upload-flow"><span className="active"><b>1</b> Upload</span><ChevronRight /><span><b>2</b> Auto split & classify</span><ChevronRight /><span><b>3</b> Save & click amount</span></div>}
     {!draft ? <button className={`dropzone ${processing ? "processing" : ""}`} disabled={processing} onClick={() => fileRef.current?.click()} onDragOver={(e) => e.preventDefault()} onDrop={(e) => { e.preventDefault(); const file = e.dataTransfer.files[0]; if (file) onFile(file); }}>
       <input ref={fileRef} type="file" accept="application/pdf,.pdf,image/png,image/jpeg,image/webp" hidden onChange={(e) => { if (e.target.files?.[0]) onFile(e.target.files[0]); e.target.value = ""; }} />
-      {processing ? <><LoaderCircle className="spinner" /><strong>Splitting and reading your receipts…</strong><span>Detecting each slip, merchant, date, amount and category</span><div className="progress"><i style={{ width: `${progress}%` }}></i></div><small>{progress}% complete</small></> : <><span className="upload-icon"><Paperclip /></span><strong>Drop one PDF with one or many receipts</strong><span>or click to choose PDF / receipt photo</span><small>Automatic top-to-bottom, side-by-side and multi-page splitting · PDF up to 20 MB</small></>}
+      {processing ? <><LoaderCircle className="spinner" /><strong>Splitting and reading your receipts…</strong><span>Detecting each slip, merchant, date, amount and category</span><div className="progress"><i style={{ width: `${progress}%` }}></i></div><small>{progress}% complete</small></> : <><span className="upload-icon"><Paperclip /></span><strong>Drop one PDF with one or many receipts</strong><span>or click to choose PDF / receipt photo</span><small>Automatic top-to-bottom, side-by-side and multi-page splitting · no app-set page or file-size limit</small></>}
     </button> : <form onSubmit={onSave} className="receipt-form">
       <div className="detected"><span><Check /></span><div><strong>{draft.entity === "personal" ? "Personal account detected" : draft.entity === "company" ? "Sdn. Bhd. account detected" : "Sole proprietor account detected"}</strong><small>{draft.confidence}% category confidence · Please confirm</small></div></div>
       <div className="form-row"><label>Merchant<input maxLength={160} value={draft.merchant} onChange={(e) => setDraft({ ...draft, merchant: e.target.value })} required /></label><label>Receipt date<input type="date" value={isoDate(draft.date)} onChange={(e) => setDraft({ ...draft, date: displayDate(e.target.value) })} required /></label></div>
