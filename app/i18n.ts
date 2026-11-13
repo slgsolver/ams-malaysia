@@ -181,7 +181,7 @@ const exact: Record<string, string> = {
   "Split left / right": "左右切割",
   "Split position": "切割位置",
   "PDF evidence is stored in this browser; export a backup from Audit Pack.": "PDF 单据保存在此浏览器；请到审计资料包导出备份。",
-  "Date was not detected. Today is shown as a placeholder; enter the date printed on this slip.": "未识别到日期。当前日期仅为占位，请填写单据上印的日期。",
+  "Date was not detected. Enter the date printed on this slip before saving.": "未识别到日期。保存前请填写单据上印的日期。",
   "Remove": "移除",
   "Download register JSON": "下载账目记录 JSON",
   "Download evidence PDFs": "下载凭证 PDF 压缩包",

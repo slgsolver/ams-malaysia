@@ -56,6 +56,7 @@ import { balanceSheet, cashFlowStatement, chartOfAccounts, profitAndLoss, saniti
 import type { AccountingReceipt, JournalEntry } from "./lib/accounting";
 import { translateToChinese } from "./i18n";
 import { classifyReceiptText, readPdfRegion, readPdfRegions } from "./lib/pdf-receipts";
+import { extractReceiptAmount, extractReceiptDate, extractReceiptMerchant, latestReceiptDate } from "./lib/receipt-extraction";
 import type { Crop, PdfRegion, ReceiptCategory } from "./lib/pdf-receipts";
 import { getReceiptEvidence, saveReceiptEvidence } from "./lib/receipt-evidence";
 import { loadStampRecords, STAMP_RULE_VERSION } from "./lib/stamp-duty";
@@ -172,15 +173,7 @@ function isoDate(value: string) {
   return Number.isNaN(parsed.valueOf()) ? "" : new Intl.DateTimeFormat("en-CA", { year: "numeric", month: "2-digit", day: "2-digit", timeZone: "Asia/Kuala_Lumpur" }).format(parsed);
 }
 
-function extractReceiptDate(text: string) {
-  const iso = text.match(/\b(20\d{2})[-/.](\d{1,2})[-/.](\d{1,2})\b/);
-  if (iso) return `${iso[1]}-${iso[2].padStart(2, "0")}-${iso[3].padStart(2, "0")}`;
-  const malaysia = text.match(/\b(\d{1,2})[-/.](\d{1,2})[-/.](20\d{2})\b/);
-  if (malaysia) return `${malaysia[3]}-${malaysia[2].padStart(2, "0")}-${malaysia[1].padStart(2, "0")}`;
-  return "";
-}
-
-const seedReceipts: Receipt[] = [
+const legacyDemoReceipts: Receipt[] = [
   { id: "1", entity: "company", merchant: "PETRONAS Station", date: "28 Jul 2026", amount: 120.5, category: "Petrol", taxUse: "Business", businessUse: 80, businessPurpose: "Client visit — Petaling Jaya", myInvoisUuid: "EI-98F2-71A0", confidence: 98 },
   { id: "2", entity: "company", merchant: "Touch 'n Go eWallet", date: "27 Jul 2026", amount: 36.8, category: "Toll Fee", taxUse: "Business", businessUse: 100, businessPurpose: "Delivery and client travel", confidence: 96 },
   { id: "3", entity: "company", merchant: "Maxis Berhad", date: "25 Jul 2026", amount: 128, category: "Mobile", taxUse: "Business", businessUse: 70, businessPurpose: "Shared business mobile plan", myInvoisUuid: "EI-44B1-901D", confidence: 99 },
@@ -193,6 +186,12 @@ const seedReceipts: Receipt[] = [
   { id: "p4", entity: "personal", merchant: "Lembaga Zakat Selangor", date: "01 Jul 2026", amount: 300, category: "Zakat", taxUse: "Relief", businessUse: 0, businessPurpose: "Zakat payment", confidence: 99 },
   { id: "p5", entity: "personal", merchant: "Village Grocer", date: "29 Jun 2026", amount: 186.4, category: "Food & Beverage", taxUse: "Personal", businessUse: 0, businessPurpose: "Household groceries", confidence: 96 },
 ];
+
+const legacyDemoReceiptSignatures = new Set(legacyDemoReceipts.map((receipt) => `${receipt.id}|${receipt.entity}|${receipt.merchant}|${receipt.date}|${receipt.amount}`));
+
+function removeLegacyDemoReceipts(receipts: Receipt[]) {
+  return receipts.filter((receipt) => !legacyDemoReceiptSignatures.has(`${receipt.id}|${receipt.entity}|${receipt.merchant}|${receipt.date}|${receipt.amount}`));
+}
 
 const bankTransactions = [
   { date: "28 Jul", description: "PETRONAS TAMAN SEA", amount: 120.5, matched: "PETRONAS Station", status: "Matched" },
@@ -384,27 +383,15 @@ function currency(value: number) {
   return new Intl.NumberFormat("en-MY", { style: "currency", currency: "MYR" }).format(value);
 }
 
-function extractAmount(text: string) {
-  const lines = text.split(/\n/).map((line) => line.trim());
-  const values = (line: string) => [...line.matchAll(/(?:RM\s*)?(\d{1,5}(?:[.,]\d{2})?)/gi)]
-    .filter((match) => /RM/i.test(match[0]) || /[.,]\d{2}$/.test(match[1]))
-    .map((match) => Number(match[1].replace(",", "."))).filter((value) => Number.isFinite(value) && value > 0);
-  const totalLines = lines.filter((line) => /\b(grand total|total paid|amount paid|total|jumlah|bayaran)\b/i.test(line) && !/sub.?total/i.test(line));
-  const totals = totalLines.flatMap(values);
-  if (totals.length) return totals[totals.length - 1];
-  const all = lines.flatMap(values);
-  return all.length ? Math.max(...all) : 0;
-}
-
 function receiptFromPdfRegion(region: PdfRegion, entity: Entity, fileName: string): Receipt {
-  const lines = region.text.split(/\n/).map((line) => line.trim()).filter(Boolean);
-  const merchant = lines.find((line) => /[a-z]{3}/i.test(line) && line.length <= 80 && !/^(receipt|invoice|tax invoice)$/i.test(line)) || `PDF page ${region.page} receipt`;
+  const merchant = extractReceiptMerchant(region.text, `PDF page ${region.page} receipt`);
   const classification = classifyReceiptText(region.text);
   const category = classification.category;
+  const detectedDate = extractReceiptDate(region.text);
   return {
     id: crypto.randomUUID(), entity, merchant: merchant.slice(0, 80),
-    date: displayDate(extractReceiptDate(region.text) || new Date().toISOString()),
-    amount: extractAmount(region.text), category,
+    date: detectedDate ? displayDate(detectedDate) : "",
+    amount: extractReceiptAmount(region.text), category,
     taxUse: entity === "personal" ? (["Medical", "Lifestyle", "Education", "Insurance", "EPF & SOCSO", "Zakat"] as Category[]).includes(category) ? "Relief" : "Personal" : "Review",
     businessUse: entity === "personal" ? 0 : 100,
     confidence: classification.confidence,
@@ -415,7 +402,7 @@ function receiptFromPdfRegion(region: PdfRegion, entity: Entity, fileName: strin
 }
 
 export default function Home() {
-  const [receipts, setReceipts] = useState(seedReceipts);
+  const [receipts, setReceipts] = useState<Receipt[]>([]);
   const [receiptsReady, setReceiptsReady] = useState(false);
   const [entity, setEntity] = useState<Entity>("company");
   const [tab, setTab] = useState<"overview" | "receipts" | "bank" | "myinvois" | "ledger" | "pl" | "balance" | "cashflow" | "compliance" | "filing" | "tax" | "stamp" | "audit">("overview");
@@ -438,6 +425,13 @@ export default function Home() {
   const [language, setLanguage] = useState<"en" | "zh">("en");
   const [languageReady, setLanguageReady] = useState(false);
   const fileRef = useRef<HTMLInputElement>(null);
+  const uploadRunRef = useRef(0);
+
+  useEffect(() => {
+    if (!toast) return;
+    const timer = window.setTimeout(() => setToast(""), 3600);
+    return () => window.clearTimeout(timer);
+  }, [toast]);
 
   const entityReceipts = useMemo(() => receipts.filter((item) => item.entity === entity), [receipts, entity]);
   const entityInvoices = useMemo(() => entityReceipts.filter((item) => item.myInvoisUuid), [entityReceipts]);
@@ -491,12 +485,12 @@ export default function Home() {
           savedReceipts = savedReceipts.map((receipt) => receipt?.entity === "business" ? { ...receipt, entity: "company" } : receipt);
           window.localStorage.setItem("ams-company-entity-v1-migrated", "true");
         }
-        const hydrated = Array.isArray(savedReceipts) ? savedReceipts.map(normalizeReceipt).filter((receipt): receipt is Receipt => Boolean(receipt)) : [];
+        const hydrated = Array.isArray(savedReceipts) ? removeLegacyDemoReceipts(savedReceipts.map(normalizeReceipt).filter((receipt): receipt is Receipt => Boolean(receipt))) : [];
         // eslint-disable-next-line react-hooks/set-state-in-effect -- hydrate saved receipt records after mount
         if (Array.isArray(savedReceipts)) setReceipts(hydrated);
       }
     } catch {
-      // Keep the built-in examples when the browser blocks local storage.
+      // Start with a blank formal account when browser storage is unavailable.
     } finally {
       try { window.localStorage.setItem("ams-company-entity-v1-migrated", "true"); } catch { /* Storage can be unavailable. */ }
       setReceiptsReady(true);
@@ -605,6 +599,7 @@ export default function Home() {
     setTab("overview");
     setQuery("");
     setSelectedCategory(null);
+    setMenuOpen(false);
     setToast(next === "personal" ? "Switched to Sim Lip Geap · Personal" : next === "business" ? "Switched to Sim Lip Geap · Sole proprietor · Form B" : "Switched to Solver Academy Sdn. Bhd. · Form C");
     setTimeout(() => setToast(""), 2500);
   }
@@ -613,10 +608,17 @@ export default function Home() {
     setSelectedCategory(category);
     setQuery("");
     setTab("receipts");
+    setMenuOpen(false);
     window.scrollTo({ top: 0, behavior: "smooth" });
   }
 
+  function navigate(next: typeof tab) {
+    setTab(next);
+    setMenuOpen(false);
+  }
+
   async function handleFile(file: File) {
+    const uploadRun = ++uploadRunRef.current;
     if (file.type === "application/pdf" || /\.pdf$/i.test(file.name)) {
       if (file.size <= 0) {
         setToast("Choose a non-empty PDF.");
@@ -627,15 +629,18 @@ export default function Home() {
       setPdfDrafts([]);
       setProgress(5);
       try {
-        const regions = await readPdfRegions(file, (page, pages) => setProgress(Math.round(5 + page / pages * 90)));
+        const regions = await readPdfRegions(file, (page, pages) => {
+          if (uploadRun === uploadRunRef.current) setProgress(Math.round(5 + page / pages * 90));
+        });
+        if (uploadRun !== uploadRunRef.current) return;
         const candidates = regions.map((region) => ({ receipt: receiptFromPdfRegion(region, entity, file.name), region }));
         setPdfSource(file);
         setPdfDrafts(candidates);
         setProgress(100);
       } catch (error) {
-        setToast(error instanceof Error ? error.message : "Unable to read this PDF.");
+        if (uploadRun === uploadRunRef.current) setToast(error instanceof Error ? error.message : "Unable to read this PDF.");
       } finally {
-        setProcessing(false);
+        if (uploadRun === uploadRunRef.current) setProcessing(false);
       }
       return;
     }
@@ -659,25 +664,26 @@ export default function Home() {
       const Tesseract = await import("tesseract.js");
       const result = await Tesseract.recognize(file, "eng", {
         logger: (message) => {
-          if (message.status === "recognizing text") setProgress(Math.max(18, Math.round(message.progress * 88)));
+          if (uploadRun === uploadRunRef.current && message.status === "recognizing text") setProgress(Math.max(18, Math.round(message.progress * 88)));
         },
       });
       ocrText = result.data.text;
     } catch {
-      setProgress(86);
+      if (uploadRun === uploadRunRef.current) setProgress(86);
     }
+    if (uploadRun !== uploadRunRef.current) return;
     const text = `${ocrText}\n${fileLabel}`;
-    const lines = ocrText.split(/\n/).map((line) => line.trim()).filter(Boolean);
-    const merchant = lines.find((line) => /[a-z]{3}/i.test(line) && line.length <= 80)?.replace(/\.(jpg|jpeg|png|webp|pdf)$/i, "") || fileLabel.replace(/\.(jpg|jpeg|png|webp)$/i, "") || "New receipt";
+    const merchant = extractReceiptMerchant(ocrText, fileLabel.replace(/\.(jpg|jpeg|png|webp|pdf)$/i, "") || "New receipt");
     const classification = classifyReceiptText(text);
     const category = classification.category;
-    const amount = extractAmount(text) || 0;
+    const amount = extractReceiptAmount(text) || 0;
+    const detectedDate = extractReceiptDate(text);
     setProgress(100);
     setDraft({
       id: crypto.randomUUID(),
       entity,
       merchant: merchant.slice(0, 34),
-      date: displayDate(extractReceiptDate(text) || new Date().toISOString()),
+      date: detectedDate ? displayDate(detectedDate) : "",
       amount,
       category,
       taxUse: entity === "personal" ? (["Medical", "Lifestyle", "Education", "Insurance", "EPF & SOCSO", "Zakat"] as Category[]).includes(category) ? "Relief" : "Personal" : category === "Entertainment" ? "Review" : "Business",
@@ -688,6 +694,15 @@ export default function Home() {
       paymentAccountCode: entity === "personal" ? undefined : "1010",
     });
     setProcessing(false);
+  }
+
+  function closeUpload() {
+    uploadRunRef.current += 1;
+    setUploadOpen(false);
+    setProcessing(false);
+    setDraft(null);
+    setPdfDrafts([]);
+    setPdfSource(null);
   }
 
   async function splitPdfDraft(index: number, direction: "horizontal" | "vertical", percent: number) {
@@ -963,22 +978,22 @@ export default function Home() {
           <button className={entity === "company" ? "selected" : ""} onClick={() => changeEntity("company")}><span className="entity-avatar business">SA</span><div><strong>Solver Academy</strong><small>Sdn. Bhd. · Form C</small></div>{entity === "company" && <Check />}</button>
         </div>
         <nav aria-label="Main navigation">
-          <button className={tab === "overview" ? "active" : ""} onClick={() => setTab("overview")}><LayoutDashboard /> Overview</button>
-          <button className={tab === "receipts" ? "active" : ""} onClick={() => { setSelectedCategory(null); setTab("receipts"); }}><ReceiptText /> Receipts <span className="nav-count">{entityReceipts.length}</span></button>
-          {!isPersonal && <button className={tab === "bank" ? "active" : ""} onClick={() => setTab("bank")}><Landmark /> Bank matching {bankRows.some((row) => row.status !== "Matched") && <span className="nav-alert">{bankRows.filter((row) => row.status !== "Matched").length}</span>}</button>}
-          {!isPersonal && <button className={tab === "myinvois" ? "active" : ""} onClick={() => setTab("myinvois")}><ScanLine /> MyInvois</button>}
-          {!isPersonal && <button className={tab === "ledger" ? "active" : ""} onClick={() => setTab("ledger")}><BookOpen /> General Ledger</button>}
-          {!isPersonal && <button className={tab === "pl" ? "active" : ""} onClick={() => setTab("pl")}><TrendingUp /> Profit &amp; Loss</button>}
-          {!isPersonal && <button className={tab === "balance" ? "active" : ""} onClick={() => setTab("balance")}><BarChart3 /> Balance Sheet</button>}
-          {!isPersonal && <button className={tab === "cashflow" ? "active" : ""} onClick={() => setTab("cashflow")}><CircleDollarSign /> Cash Flow</button>}
-          <button className={tab === "compliance" ? "active" : ""} onClick={() => setTab("compliance")}><ShieldCheck /> LHDN Compliance</button>
-          <button className={tab === "filing" ? "active" : ""} onClick={() => setTab("filing")}><ClipboardCheck /> Form checklist <span className="nav-progress">{filingPercent}%</span></button>
-          <button className={tab === "tax" ? "active" : ""} onClick={() => setTab("tax")}><FileText /> {isPersonal ? "Tax Report" : isCompany ? "Form C & Tax" : "Form B Tax"}</button>
-          <button className={tab === "stamp" ? "active" : ""} onClick={() => setTab("stamp")}><FileCheck2 /> Stamp Duty</button>
-          <button className={tab === "audit" ? "active" : ""} onClick={() => setTab("audit")}><Archive /> Audit Pack</button>
+          <button className={tab === "overview" ? "active" : ""} onClick={() => navigate("overview")}><LayoutDashboard /> Overview</button>
+          <button className={tab === "receipts" ? "active" : ""} onClick={() => { setSelectedCategory(null); navigate("receipts"); }}><ReceiptText /> Receipts <span className="nav-count">{entityReceipts.length}</span></button>
+          {!isPersonal && <button className={tab === "bank" ? "active" : ""} onClick={() => navigate("bank")}><Landmark /> Bank matching {bankRows.some((row) => row.status !== "Matched") && <span className="nav-alert">{bankRows.filter((row) => row.status !== "Matched").length}</span>}</button>}
+          {!isPersonal && <button className={tab === "myinvois" ? "active" : ""} onClick={() => navigate("myinvois")}><ScanLine /> MyInvois</button>}
+          {!isPersonal && <button className={tab === "ledger" ? "active" : ""} onClick={() => navigate("ledger")}><BookOpen /> General Ledger</button>}
+          {!isPersonal && <button className={tab === "pl" ? "active" : ""} onClick={() => navigate("pl")}><TrendingUp /> Profit &amp; Loss</button>}
+          {!isPersonal && <button className={tab === "balance" ? "active" : ""} onClick={() => navigate("balance")}><BarChart3 /> Balance Sheet</button>}
+          {!isPersonal && <button className={tab === "cashflow" ? "active" : ""} onClick={() => navigate("cashflow")}><CircleDollarSign /> Cash Flow</button>}
+          <button className={tab === "compliance" ? "active" : ""} onClick={() => navigate("compliance")}><ShieldCheck /> LHDN Compliance</button>
+          <button className={tab === "filing" ? "active" : ""} onClick={() => navigate("filing")}><ClipboardCheck /> Form checklist <span className="nav-progress">{filingPercent}%</span></button>
+          <button className={tab === "tax" ? "active" : ""} onClick={() => navigate("tax")}><FileText /> {isPersonal ? "Tax Report" : isCompany ? "Form C & Tax" : "Form B Tax"}</button>
+          <button className={tab === "stamp" ? "active" : ""} onClick={() => navigate("stamp")}><FileCheck2 /> Stamp Duty</button>
+          <button className={tab === "audit" ? "active" : ""} onClick={() => navigate("audit")}><Archive /> Audit Pack</button>
         </nav>
         <div className="sidebar-bottom">
-          <div className="tax-card"><span className="mini-icon"><FileCheck2 /></span><strong>YA 2026 · Form {currentForm}</strong><p>{filingPercent}% of filing information marked ready.</p><button onClick={() => setTab("filing")}>Open filing checklist <ArrowUpRight /></button></div>
+          <div className="tax-card"><span className="mini-icon"><FileCheck2 /></span><strong>YA 2026 · Form {currentForm}</strong><p>{filingPercent}% of filing information marked ready.</p><button onClick={() => navigate("filing")}>Open filing checklist <ArrowUpRight /></button></div>
           <button className="help"><CircleHelp /> Help & tax guide</button>
           <div className="profile"><span>{isCompany ? "SA" : "SL"}</span><div><strong>{currentName}</strong><small>{isPersonal ? "Individual taxpayer" : isCompany ? "Sdn. Bhd. company" : "Sole proprietor"}</small></div><ChevronDown /></div>
         </div>
@@ -1130,7 +1145,7 @@ export default function Home() {
         )}
       </section>
 
-      {uploadOpen && pdfDrafts.length > 0 ? <PdfReviewModal drafts={pdfDrafts} processing={processing} onChange={(index, receipt) => setPdfDrafts((current) => current.map((item, at) => at === index ? { ...item, receipt } : item))} onRemove={(index) => setPdfDrafts((current) => current.filter((_, at) => at !== index))} onSplit={splitPdfDraft} onSave={savePdfDrafts} onClose={() => { if (!processing) { setUploadOpen(false); setPdfDrafts([]); setPdfSource(null); } }} /> : uploadOpen && <UploadModal entity={entity} draft={draft} setDraft={setDraft} processing={processing} progress={progress} fileRef={fileRef} onFile={handleFile} onClose={() => { if (!processing) { setUploadOpen(false); setDraft(null); setPdfDrafts([]); setPdfSource(null); } }} onSave={saveReceipt} />}
+      {uploadOpen && pdfDrafts.length > 0 ? <PdfReviewModal drafts={pdfDrafts} processing={processing} onChange={(index, receipt) => setPdfDrafts((current) => current.map((item, at) => at === index ? { ...item, receipt } : item))} onRemove={(index) => setPdfDrafts((current) => current.filter((_, at) => at !== index))} onSplit={splitPdfDraft} onSave={savePdfDrafts} onClose={closeUpload} /> : uploadOpen && <UploadModal entity={entity} draft={draft} setDraft={setDraft} processing={processing} progress={progress} fileRef={fileRef} onFile={handleFile} onClose={closeUpload} onSave={saveReceipt} />}
       {menuOpen && <button className="menu-backdrop" aria-label="Close menu" onClick={() => setMenuOpen(false)} />}
       {toast && <div className="toast"><Check /> {toast}</div>}
     </main>
@@ -1160,7 +1175,7 @@ function CategoryReceiptHero({ category, receipts, onBack, onUpload }: { categor
   const label = category === "Toll Fee" ? "Toll & Parking" : category;
   const total = receipts.reduce((sum, receipt) => sum + receipt.amount, 0);
   const pdfCount = receipts.filter((receipt) => receipt.hasEvidence).length;
-  const latestDate = receipts[0]?.date ?? "No receipt yet";
+  const latestDate = latestReceiptDate(receipts.map((receipt) => receipt.date)) || "No receipt yet";
   return <section className="category-detail-hero">
     <button type="button" className="category-back" onClick={onBack}><ChevronRight /> All receipt categories</button>
     <div className="category-detail-main">
@@ -1192,13 +1207,25 @@ function ReceiptTable({ entity, receipts, query, setQuery, onViewAll, onEdit, on
   </section>;
 }
 
+function useModalEscape(onClose: () => void, disabled = false) {
+  useEffect(() => {
+    if (disabled) return;
+    const closeOnEscape = (event: KeyboardEvent) => {
+      if (event.key === "Escape") onClose();
+    };
+    window.addEventListener("keydown", closeOnEscape);
+    return () => window.removeEventListener("keydown", closeOnEscape);
+  }, [disabled, onClose]);
+}
+
 function PdfReviewModal({ drafts, processing, onChange, onRemove, onSplit, onSave, onClose }: { drafts: PdfDraft[]; processing: boolean; onChange: (index: number, receipt: Receipt) => void; onRemove: (index: number) => void; onSplit: (index: number, direction: "horizontal" | "vertical", percent: number) => void; onSave: () => void; onClose: () => void }) {
   const [splitPercent, setSplitPercent] = useState(50);
+  useModalEscape(onClose, processing);
   const categories = Object.keys(categoryMeta) as Category[];
   const categorised = drafts.filter(({ receipt }) => receipt.category !== "Others").length;
-  const needsDetails = drafts.filter(({ receipt, region }) => !receipt.amount || !extractReceiptDate(region.text)).length;
-  return <div className="modal-backdrop" role="dialog" aria-modal="true" aria-labelledby="pdf-review-title"><div className="modal pdf-review-modal">
-    <div className="modal-head"><div><span className="pill"><FileText /> PDF receipt split</span><h2 id="pdf-review-title">{drafts.length} separate receipt{drafts.length === 1 ? "" : "s"} detected</h2><p>AMS has cut and classified the file. Review the highlighted details, then save each slip as its own PDF.</p></div><button className="icon-btn" onClick={onClose} disabled={processing} aria-label="Close"><X /></button></div>
+  const needsDetails = drafts.filter(({ receipt }) => !receipt.amount || !isoDate(receipt.date)).length;
+  return <div className="modal-backdrop" role="dialog" aria-modal="true" aria-labelledby="pdf-review-title" onMouseDown={(event) => { if (!processing && event.target === event.currentTarget) onClose(); }}><div className="modal pdf-review-modal">
+    <div className="modal-head"><div><span className="pill"><FileText /> PDF receipt split</span><h2 id="pdf-review-title">{drafts.length} separate receipt{drafts.length === 1 ? "" : "s"} detected</h2><p>AMS has cut and classified the file. Review the highlighted details, then save each slip as its own PDF.</p></div><button className="icon-btn modal-close" onClick={onClose} disabled={processing} aria-label="Close"><X /></button></div>
     <div className="pdf-review-summary"><article><ScanLine /><span>Detected<strong>{drafts.length} slips</strong></span></article><article><Sparkles /><span>Auto-classified<strong>{categorised} of {drafts.length}</strong></span></article><article className={needsDetails ? "warning" : "ready"}>{needsDetails ? <AlertCircle /> : <Check />}<span>Need details<strong>{needsDetails}</strong></span></article></div>
     <div className="pdf-review-note"><AlertCircle /> OCR and auto-splitting may be wrong. Split a combined page below; do not save until each preview contains exactly one receipt. Business tax use starts at Review. PDF evidence is stored in this browser; export a backup from Audit Pack.</div>
     <div className="pdf-split-control"><label>Split position <input type="range" min="20" max="80" value={splitPercent} onChange={(event) => setSplitPercent(Number(event.target.value))} /> {splitPercent}%</label><small>Use horizontal for receipts stacked top-to-bottom, vertical for side-by-side receipts.</small></div>
@@ -1208,7 +1235,7 @@ function PdfReviewModal({ drafts, processing, onChange, onRemove, onSplit, onSav
         <img src={region.preview} alt={`PDF page ${region.page}, receipt ${index + 1}`} /><span>Page {region.page} · slip {index + 1}</span></div>
       <div className="pdf-draft-fields"><div className="pdf-card-head"><div><strong>Receipt {index + 1}</strong><span className={`pdf-auto-chip ${receipt.category === "Others" ? "review" : "ready"}`}><Sparkles /> {receipt.category === "Others" ? "Choose category" : `${receipt.confidence}% category match`}</span></div><button type="button" onClick={() => onRemove(index)} disabled={processing}>Remove</button></div>
         <div className="form-row"><label>Merchant<input value={receipt.merchant} maxLength={160} onChange={(event) => onChange(index, { ...receipt, merchant: event.target.value })} /></label><label>Date<input type="date" value={isoDate(receipt.date)} onChange={(event) => onChange(index, { ...receipt, date: displayDate(event.target.value) })} /></label></div>
-        {!extractReceiptDate(region.text) && <small className="pdf-ocr-warning">Date was not detected. Today is shown as a placeholder; enter the date printed on this slip.</small>}
+        {!isoDate(receipt.date) && <small className="pdf-ocr-warning">Date was not detected. Enter the date printed on this slip before saving.</small>}
         <div className="form-row"><label>Gross amount (RM)<input type="number" min="0.01" step="0.01" value={receipt.amount || ""} onChange={(event) => onChange(index, { ...receipt, amount: Number(event.target.value) })} /></label><label>Category<select value={receipt.category} onChange={(event) => onChange(index, { ...receipt, category: event.target.value as Category })}>{categories.map((category) => <option key={category} value={category}>{category === "Toll Fee" ? "Toll & Parking" : category}</option>)}</select></label></div>
         <div className="form-row"><label>Tax treatment<select value={receipt.taxUse} onChange={(event) => onChange(index, { ...receipt, taxUse: event.target.value as Receipt["taxUse"] })}>{receipt.entity === "personal" ? <><option value="Personal">Personal</option><option value="Relief">Potential relief</option><option value="Review">Review</option></> : <><option value="Review">Review</option><option value="Business">Business</option><option value="Personal">Personal / non-deductible</option></>}</select></label>{receipt.entity !== "personal" && <label>Business use %<input type="number" min="0" max="100" value={receipt.businessUse} onChange={(event) => onChange(index, { ...receipt, businessUse: Number(event.target.value) })} /></label>}</div>
         {receipt.entity !== "personal" && <label>Business purpose<input value={receipt.businessPurpose || ""} maxLength={500} onChange={(event) => onChange(index, { ...receipt, businessPurpose: event.target.value })} placeholder="Required before posting to accounts" /></label>}
@@ -1220,11 +1247,12 @@ function PdfReviewModal({ drafts, processing, onChange, onRemove, onSplit, onSav
 }
 
 function UploadModal({ entity, draft, setDraft, processing, progress, fileRef, onFile, onClose, onSave }: { entity: Entity; draft: Receipt | null; setDraft: (r: Receipt) => void; processing: boolean; progress: number; fileRef: React.RefObject<HTMLInputElement | null>; onFile: (f: File) => void; onClose: () => void; onSave: (e: FormEvent) => void }) {
+  useModalEscape(onClose);
   const personalCategories: Category[] = ["Medical", "Lifestyle", "Education", "Insurance", "EPF & SOCSO", "Zakat", "Food & Beverage", "Stationery", "Petrol", "Toll Fee", "Entertainment", "Mobile", "Others"];
   const businessCategories: Category[] = ["Food & Beverage", "Stationery", "Petrol", "Toll Fee", "Mobile", "Entertainment", "Office Rent", "Software & Subscriptions", "Professional Fees", "Advertising & Marketing", "Utilities", "Others"];
   const draftAccount = (draft?.entity || entity) === "personal" ? "Sim Lip Geap · Personal" : (draft?.entity || entity) === "company" ? "Solver Academy · Sdn. Bhd." : "Sim Lip Geap · Sole proprietor";
-  return <div className="modal-backdrop" role="dialog" aria-modal="true" aria-labelledby="upload-title"><div className="modal">
-    <div className="modal-head"><div><span className="pill"><Sparkles /> {draftAccount}</span><h2 id="upload-title">{draft ? "Review receipt" : "Upload receipts"}</h2><p>{draft ? "Confirm the extracted details before saving." : "Upload one file — AMS will separate and organise the receipts inside it."}</p></div><button className="icon-btn" onClick={onClose} aria-label="Close"><X /></button></div>
+  return <div className="modal-backdrop" role="dialog" aria-modal="true" aria-labelledby="upload-title" onMouseDown={(event) => { if (event.target === event.currentTarget) onClose(); }}><div className="modal">
+    <div className="modal-head"><div><span className="pill"><Sparkles /> {draftAccount}</span><h2 id="upload-title">{draft ? "Review receipt" : "Upload receipts"}</h2><p>{draft ? "Confirm the extracted details before saving." : "Upload one file — AMS will separate and organise the receipts inside it."}</p></div><button className="icon-btn modal-close" onClick={onClose} aria-label="Close"><X /></button></div>
     {!draft && <div className="upload-flow"><span className="active"><b>1</b> Upload</span><ChevronRight /><span><b>2</b> Auto split & classify</span><ChevronRight /><span><b>3</b> Save & click amount</span></div>}
     {!draft ? <button className={`dropzone ${processing ? "processing" : ""}`} disabled={processing} onClick={() => fileRef.current?.click()} onDragOver={(e) => e.preventDefault()} onDrop={(e) => { e.preventDefault(); const file = e.dataTransfer.files[0]; if (file) onFile(file); }}>
       <input ref={fileRef} type="file" accept="application/pdf,.pdf,image/png,image/jpeg,image/webp" hidden onChange={(e) => { if (e.target.files?.[0]) onFile(e.target.files[0]); e.target.value = ""; }} />

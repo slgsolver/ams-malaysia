@@ -48,6 +48,16 @@ test("side-by-side receipts become separate regions", () => {
   assert.ok(crops[0].x + crops[0].width < crops[1].x);
 });
 
+test("portrait A4 scan recognises two receipts across a narrow centre gutter", () => {
+  const pixels = pageWithReceiptBoxes([
+    [120, 80, 500, 1400],
+    [560, 80, 940, 1400],
+  ], 1060, 1500);
+  const crops = verticalReceiptBands(pixels, 1060, 1500);
+  assert.equal(crops.length, 2);
+  assert.ok(crops[0].x + crops[0].width < crops[1].x);
+});
+
 test("a two-by-two scan becomes four receipt regions", () => {
   const pixels = pageWithReceiptBoxes([
     [25, 20, 250, 190],
@@ -65,4 +75,6 @@ test("Malaysian merchant keywords classify receipt categories", () => {
   assert.equal(classifyReceiptText("TOUCH N GO PARKING RM 20.00").category, "Toll Fee");
   assert.equal(classifyReceiptText("RESTORAN MAJU JUMLAH RM 50.00").category, "Food & Beverage");
   assert.equal(classifyReceiptText("MAXIS POSTPAID RM 128.00").category, "Mobile");
+  assert.equal(classifyReceiptText("SOON XIN KCPITIAM TOTAL RM 4.00").category, "Food & Beverage");
+  assert.equal(classifyReceiptText("Thank You For Dining With Us TOUCH N GO RM 58.20").category, "Food & Beverage");
 });

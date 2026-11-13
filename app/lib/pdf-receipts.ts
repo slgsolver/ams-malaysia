@@ -29,6 +29,11 @@ export type ReceiptClassification = {
   matchedRule: string;
 };
 
+type OcrWorker = {
+  recognize: (image: HTMLCanvasElement) => Promise<{ data: { text: string; confidence: number } }>;
+  terminate: () => Promise<unknown>;
+};
+
 const categoryRules: Array<{
   category: ReceiptCategory;
   confidence: number;
@@ -36,6 +41,9 @@ const categoryRules: Array<{
   pattern: RegExp;
 }> = [
   { category: "Petrol", confidence: 96, label: "fuel merchant", pattern: /\b(petronas|shell|caltex|bhpetrol|petron|petrol|fuel|diesel|ron ?9[57])\b/i },
+  // Food receipts commonly show Touch 'n Go as a payment method. Match the
+  // merchant/menu evidence first so those payments are not mistaken for tolls.
+  { category: "Food & Beverage", confidence: 90, label: "food or beverage", pattern: /restaurant|restoran|cafe|coffee house|k[oc]pitiam|food ?court|bak\s*(?:kut|fut)\s*teh|kitchen|sushi|din(?:e\s*in|ing)|noodles?|fried rice|thai me up|thai rich|makanan|minuman|grabfood|foodpanda|mcdonald|\bmcd\b|\bkfc\b|starbucks|secret recipe|nasi|makan/i },
   { category: "Toll Fee", confidence: 95, label: "toll or parking", pattern: /touch.?n.?go|\btng\b|plus malaysia|smarttag|\brfid\b|\btoll\b|tol plaza|parking|parkir|car ?park|dbkl parking/i },
   { category: "Mobile", confidence: 95, label: "telecommunications", pattern: /\b(maxis|celcomdigi|celcom|digi|u mobile|yes ?5g|unifi mobile|telekom malaysia|mobile|postpaid|prepaid)\b/i },
   { category: "Medical", confidence: 94, label: "medical provider", pattern: /hospital|clinic|klinik|medical|pharmacy|farmasi|doctor|doktor|dental|kpj|pantai|sunway medical|guardian health/i },
@@ -50,7 +58,6 @@ const categoryRules: Array<{
   { category: "Utilities", confidence: 93, label: "utility provider", pattern: /\b(tnb|syabas)\b|air selangor|electricity|utility|bil air|bil elektrik|indah water/i },
   { category: "Stationery", confidence: 91, label: "stationery or office supplies", pattern: /popular bookstore|stationery|alat tulis|office supplies|photostat|printing|printer ink|toner|\bpaper\b|\bpen\b|notebook/i },
   { category: "Entertainment", confidence: 91, label: "entertainment", pattern: /\b(gsc|tgv)\b|cinema|movie|netflix|spotify|entertainment|karaoke|theme park/i },
-  { category: "Food & Beverage", confidence: 90, label: "food or beverage", pattern: /restaurant|restoran|cafe|coffee|kopitiam|kedai makan|makanan|minuman|grabfood|foodpanda|mcdonald|\bmcd\b|\bkfc\b|starbucks|secret recipe|nasi|makan/i },
   { category: "Lifestyle", confidence: 82, label: "lifestyle", pattern: /sports equipment|gym|fitness|computer|tablet|smartphone|internet bill|book purchase/i },
 ];
 
@@ -64,6 +71,16 @@ export function classifyReceiptText(text: string): ReceiptClassification {
 }
 
 const fullPageCrop: Crop = { x: 0, y: 0, width: 1, height: 1 };
+
+// PDF.js 6's modern build uses very new JavaScript APIs such as
+// Map.prototype.getOrInsertComputed in both the page and worker runtimes.
+// They are not available in some supported iPhone/iPad Safari versions.
+// The official legacy build includes the required polyfills in both places.
+async function loadPdfJs() {
+  const pdfjs = await import("pdfjs-dist/legacy/build/pdf.mjs");
+  pdfjs.GlobalWorkerOptions.workerSrc = new URL("pdfjs-dist/legacy/build/pdf.worker.min.mjs", import.meta.url).toString();
+  return pdfjs;
+}
 
 // The projection finds broad whitespace between separate slips without treating
 // ordinary line spacing inside a receipt as a new document.
@@ -117,7 +134,12 @@ export function verticalReceiptBands(pixels: Uint8ClampedArray, width: number, h
     if (dark >= threshold) active.push(x);
   }
   if (!active.length) return [fullPageCrop];
-  const gap = Math.max(54, Math.round(width * 0.07));
+  // A portrait scan can contain two long receipts with a comparatively narrow
+  // centre gutter. Use the stricter gutter for landscape/receipt-shaped scans,
+  // but allow a 5% gutter on a tall page such as an A4 scan.
+  const gap = height > width * 1.2
+    ? Math.max(38, Math.round(width * 0.05))
+    : Math.max(54, Math.round(width * 0.07));
   const bands: [number, number][] = [];
   let start = active[0];
   let end = active[0];
@@ -185,8 +207,7 @@ async function renderDocumentPage(pdfDocument: PDFDocumentProxy, pageNumber: num
 }
 
 async function renderPage(file: File, pageNumber: number) {
-  const pdfjs = await import("pdfjs-dist");
-  pdfjs.GlobalWorkerOptions.workerSrc = new URL("pdfjs-dist/build/pdf.worker.min.mjs", import.meta.url).toString();
+  const pdfjs = await loadPdfJs();
   const task = pdfjs.getDocument({ data: new Uint8Array(await file.arrayBuffer()) });
   try {
     const pdfDocument = await task.promise;
@@ -198,8 +219,7 @@ async function renderPage(file: File, pageNumber: number) {
 }
 
 export async function countPdfPages(file: File): Promise<number> {
-  const pdfjs = await import("pdfjs-dist");
-  pdfjs.GlobalWorkerOptions.workerSrc = new URL("pdfjs-dist/build/pdf.worker.min.mjs", import.meta.url).toString();
+  const pdfjs = await loadPdfJs();
   const task = pdfjs.getDocument({ data: new Uint8Array(await file.arrayBuffer()) });
   try {
     const document = await task.promise;
@@ -216,7 +236,27 @@ export async function autoRegions(file: File, pageNumber: number): Promise<Crop[
   return receiptRegionsFromPixels(context.getImageData(0, 0, canvas.width, canvas.height).data, canvas.width, canvas.height);
 }
 
-async function readCanvasRegion(canvas: HTMLCanvasElement, pageNumber: number, crop: Crop): Promise<PdfRegion> {
+function rotateCanvas(source: HTMLCanvasElement, radians: number) {
+  const rotated = document.createElement("canvas");
+  rotated.width = source.height;
+  rotated.height = source.width;
+  const context = rotated.getContext("2d");
+  if (!context) throw new Error("This browser cannot rotate receipt images.");
+  context.fillStyle = "white";
+  context.fillRect(0, 0, rotated.width, rotated.height);
+  context.translate(rotated.width / 2, rotated.height / 2);
+  context.rotate(radians);
+  context.drawImage(source, -source.width / 2, -source.height / 2);
+  return rotated;
+}
+
+function ocrScore(text: string, confidence: number) {
+  const usefulCharacters = text.replace(/[^a-z0-9]/gi, "").length;
+  const receiptKeywords = /\b(total|amount|jumlah|receipt|invoice|cash|visa|mastercard|rm)\b/i.test(text) ? 20 : 0;
+  return confidence + Math.min(20, usefulCharacters / 20) + receiptKeywords;
+}
+
+async function readCanvasRegion(canvas: HTMLCanvasElement, pageNumber: number, crop: Crop, worker?: OcrWorker): Promise<PdfRegion> {
   const x = Math.max(0, Math.round(crop.x * canvas.width));
   const y = Math.max(0, Math.round(crop.y * canvas.height));
   const width = Math.max(1, Math.min(canvas.width - x, Math.round(crop.width * canvas.width)));
@@ -229,28 +269,49 @@ async function readCanvasRegion(canvas: HTMLCanvasElement, pageNumber: number, c
   context.fillStyle = "white";
   context.fillRect(0, 0, width, height);
   context.drawImage(canvas, x, y, width, height, 0, 0, width, height);
-  const preview = cut.toDataURL("image/jpeg", 0.9);
+  let evidenceCanvas = cut;
   let text = "";
-  try {
-    const Tesseract = await import("tesseract.js");
-    text = (await Tesseract.recognize(cut, "eng")).data.text;
-  } catch {
-    // A readable cropped PDF is still available for manual entry.
+  if (worker) {
+    try {
+      if (width > height * 1.35) {
+        // Wide strips in phone scans are commonly receipts photographed 90°
+        // sideways. Read both possible directions and retain the clearer one.
+        const clockwise = rotateCanvas(cut, Math.PI / 2);
+        const counterClockwise = rotateCanvas(cut, -Math.PI / 2);
+        const clockwiseResult = (await worker.recognize(clockwise)).data;
+        const counterClockwiseResult = (await worker.recognize(counterClockwise)).data;
+        const useClockwise = ocrScore(clockwiseResult.text, clockwiseResult.confidence)
+          >= ocrScore(counterClockwiseResult.text, counterClockwiseResult.confidence);
+        evidenceCanvas = useClockwise ? clockwise : counterClockwise;
+        text = useClockwise ? clockwiseResult.text : counterClockwiseResult.text;
+      } else {
+        text = (await worker.recognize(cut)).data.text;
+      }
+    } catch {
+      // A readable cropped PDF is still available for manual entry.
+    }
   }
+  const preview = evidenceCanvas.toDataURL("image/jpeg", 0.9);
   const { PDFDocument } = await import("pdf-lib");
   const pdfDocument = await PDFDocument.create();
   const image = await pdfDocument.embedJpg(preview);
-  const page = pdfDocument.addPage([width / 1.8, height / 1.8]);
+  const page = pdfDocument.addPage([evidenceCanvas.width / 1.8, evidenceCanvas.height / 1.8]);
   page.drawImage(image, { x: 0, y: 0, width: page.getWidth(), height: page.getHeight() });
   const pdf = new Blob([Uint8Array.from(await pdfDocument.save())], { type: "application/pdf" });
   return { page: pageNumber, crop, text, preview, pdf };
 }
 
 export async function readPdfRegions(file: File, onPage?: (page: number, pages: number) => void): Promise<PdfRegion[]> {
-  const pdfjs = await import("pdfjs-dist");
-  pdfjs.GlobalWorkerOptions.workerSrc = new URL("pdfjs-dist/build/pdf.worker.min.mjs", import.meta.url).toString();
+  const pdfjs = await loadPdfJs();
   const task = pdfjs.getDocument({ data: new Uint8Array(await file.arrayBuffer()) });
+  let worker: OcrWorker | undefined;
   try {
+    try {
+      const Tesseract = await import("tesseract.js");
+      worker = await Tesseract.createWorker("eng") as OcrWorker;
+    } catch {
+      // Keep splitting and evidence creation available when OCR cannot load.
+    }
     const pdfDocument = await task.promise;
     const regions: PdfRegion[] = [];
     for (let pageNumber = 1; pageNumber <= pdfDocument.numPages; pageNumber++) {
@@ -258,7 +319,7 @@ export async function readPdfRegions(file: File, onPage?: (page: number, pages: 
       const context = canvas.getContext("2d", { willReadFrequently: true });
       if (!context) throw new Error("This browser cannot inspect PDF pages.");
       const crops = receiptRegionsFromPixels(context.getImageData(0, 0, canvas.width, canvas.height).data, canvas.width, canvas.height);
-      for (const crop of crops) regions.push(await readCanvasRegion(canvas, pageNumber, crop));
+      for (const crop of crops) regions.push(await readCanvasRegion(canvas, pageNumber, crop, worker));
       canvas.width = 1;
       canvas.height = 1;
       onPage?.(pageNumber, pdfDocument.numPages);
@@ -266,11 +327,21 @@ export async function readPdfRegions(file: File, onPage?: (page: number, pages: 
     }
     return regions;
   } finally {
+    await worker?.terminate();
     await task.destroy();
   }
 }
 
 export async function readPdfRegion(file: File, pageNumber: number, crop: Crop): Promise<PdfRegion> {
   const { canvas } = await renderPage(file, pageNumber);
-  return readCanvasRegion(canvas, pageNumber, crop);
+  let worker: OcrWorker | undefined;
+  try {
+    const Tesseract = await import("tesseract.js");
+    worker = await Tesseract.createWorker("eng") as OcrWorker;
+    return await readCanvasRegion(canvas, pageNumber, crop, worker);
+  } catch {
+    return readCanvasRegion(canvas, pageNumber, crop);
+  } finally {
+    await worker?.terminate();
+  }
 }
