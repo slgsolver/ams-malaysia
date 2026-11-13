@@ -55,6 +55,8 @@ import StampDutyWorkspace from "./components/stamp-duty-workspace";
 import { balanceSheet, cashFlowStatement, chartOfAccounts, profitAndLoss, sanitizeJournalEntries, seedJournalEntries, seedSoleProprietorJournalEntries, soleProprietorChartOfAccounts, taxComputation } from "./lib/accounting";
 import type { AccountingReceipt, JournalEntry } from "./lib/accounting";
 import { translateToChinese } from "./i18n";
+import { insuranceEntertainmentTreatment, isSoleProprietorEntertainment, normalizeInsuranceEntertainmentPurpose } from "./lib/insurance-entertainment";
+import type { InsuranceEntertainmentPurpose } from "./lib/insurance-entertainment";
 import { classifyReceiptText, readPdfRegion, readPdfRegions } from "./lib/pdf-receipts";
 import { extractReceiptAmount, extractReceiptDate, extractReceiptMerchant, latestReceiptDate, validateReceiptDraft } from "./lib/receipt-extraction";
 import type { Crop, PdfRegion, ReceiptCategory } from "./lib/pdf-receipts";
@@ -73,6 +75,10 @@ type Receipt = {
   taxUse: "Business" | "Relief" | "Personal" | "Review";
   businessUse: number;
   businessPurpose?: string;
+  entertainmentPurpose?: InsuranceEntertainmentPurpose;
+  clientName?: string;
+  policyReference?: string;
+  participants?: string;
   myInvoisUuid?: string;
   confidence: number;
   fileName?: string;
@@ -106,6 +112,19 @@ const categoryValues = new Set<Category>(Object.keys(categoryMeta) as Category[]
 const entityValues = new Set<Entity>(["personal", "business", "company"]);
 const taxUseValues = new Set<Receipt["taxUse"]>(["Business", "Relief", "Personal", "Review"]);
 
+function applyInsuranceEntertainmentRules(receipt: Receipt, changes: Partial<Receipt> = {}): Receipt {
+  let updated = { ...receipt, ...changes };
+  if (!isSoleProprietorEntertainment(updated.entity, updated.category)) {
+    if (receipt.entertainmentPurpose) updated = { ...updated, entertainmentPurpose: undefined, clientName: undefined, policyReference: undefined, participants: undefined };
+    return updated;
+  }
+  const purpose = normalizeInsuranceEntertainmentPurpose(updated.entertainmentPurpose);
+  if (purpose === "private-meal") updated.category = "Food & Beverage";
+  else if (purpose) updated.category = "Entertainment";
+  const treatment = insuranceEntertainmentTreatment(updated);
+  return { ...updated, entertainmentPurpose: purpose, taxUse: treatment.taxUse, businessUse: treatment.businessUse };
+}
+
 function shortText(value: unknown, max: number) {
   return typeof value === "string" ? value.trim().slice(0, max) : "";
 }
@@ -119,11 +138,16 @@ function normalizeReceipt(value: unknown, { allowMissingDate = false }: { allowM
   const amount = Number(item.amount);
   const businessUse = Number(item.businessUse);
   const confidence = Number(item.confidence);
+  const entertainmentPurpose = normalizeInsuranceEntertainmentPurpose(item.entertainmentPurpose);
+  const clientName = shortText(item.clientName, 160) || undefined;
+  const policyReference = shortText(item.policyReference, 160) || undefined;
+  const participants = shortText(item.participants, 500) || undefined;
+  const businessPurpose = shortText(item.businessPurpose, 500) || undefined;
   if (!id || !merchant || (!allowMissingDate && !date) || !Number.isFinite(amount) || amount <= 0 || amount > 999_999_999.99) return null;
   if (!item.entity || !entityValues.has(item.entity) || !item.category || !categoryValues.has(item.category) || !item.taxUse || !taxUseValues.has(item.taxUse)) return null;
   if (item.entity === "personal" && item.taxUse === "Business") return null;
   if (item.entity !== "personal" && item.taxUse === "Relief") return null;
-  return {
+  const normalized = {
     id,
     entity: item.entity,
     merchant,
@@ -132,13 +156,21 @@ function normalizeReceipt(value: unknown, { allowMissingDate = false }: { allowM
     category: item.category,
     taxUse: item.taxUse,
     businessUse: Number.isFinite(businessUse) ? Math.max(0, Math.min(100, businessUse)) : 0,
-    businessPurpose: shortText(item.businessPurpose, 500) || undefined,
+    businessPurpose,
+    entertainmentPurpose,
+    clientName,
+    policyReference,
+    participants,
     myInvoisUuid: shortText(item.myInvoisUuid, 160) || undefined,
     confidence: Number.isFinite(confidence) ? Math.max(0, Math.min(100, Math.round(confidence))) : 0,
     fileName: shortText(item.fileName, 240) || undefined,
     hasEvidence: item.hasEvidence === true,
     paymentAccountCode: item.entity === "company" && ["1000", "1010", "2000", "2600"].includes(shortText(item.paymentAccountCode, 4)) ? shortText(item.paymentAccountCode, 4) : item.entity === "business" && ["1000", "1010", "2000", "3000"].includes(shortText(item.paymentAccountCode, 4)) ? shortText(item.paymentAccountCode, 4) : item.entity === "personal" ? undefined : "1010",
   };
+  if (!isSoleProprietorEntertainment(normalized.entity, normalized.category)) return normalized;
+  const treatment = insuranceEntertainmentTreatment(normalized);
+  if (validateReceiptDraft(normalized).dateNeedsReview && treatment.taxUse === "Business") return { ...normalized, taxUse: "Review", businessUse: 0 };
+  return { ...normalized, taxUse: treatment.taxUse, businessUse: treatment.businessUse };
 }
 
 function csvCell(value: string | number) {
@@ -388,7 +420,7 @@ function receiptFromPdfRegion(region: PdfRegion, entity: Entity, fileName: strin
   const classification = classifyReceiptText(region.text);
   const category = classification.category;
   const detectedDate = extractReceiptDate(region.text);
-  return {
+  const receipt: Receipt = {
     id: crypto.randomUUID(), entity, merchant: merchant.slice(0, 80),
     date: detectedDate ? displayDate(detectedDate) : "",
     amount: extractReceiptAmount(region.text), category,
@@ -399,6 +431,7 @@ function receiptFromPdfRegion(region: PdfRegion, entity: Entity, fileName: strin
     hasEvidence: true,
     paymentAccountCode: entity === "personal" ? undefined : "1010",
   };
+  return applyInsuranceEntertainmentRules(receipt);
 }
 
 export default function Home() {
@@ -679,7 +712,7 @@ export default function Home() {
     const amount = extractReceiptAmount(text) || 0;
     const detectedDate = extractReceiptDate(text);
     setProgress(100);
-    setDraft({
+    const receipt: Receipt = {
       id: crypto.randomUUID(),
       entity,
       merchant: merchant.slice(0, 34),
@@ -692,7 +725,8 @@ export default function Home() {
       confidence: classification.confidence,
       fileName: file.name,
       paymentAccountCode: entity === "personal" ? undefined : "1010",
-    });
+    };
+    setDraft(applyInsuranceEntertainmentRules(receipt));
     setProcessing(false);
   }
 
@@ -738,13 +772,15 @@ export default function Home() {
     const normalized = pdfDrafts.map((item, index) => {
       const validation = validations[index];
       const receipt = validation.dateNeedsReview ? { ...item.receipt, date: validation.dateValid ? item.receipt.date : "", taxUse: "Review" as const } : item.receipt;
-      return normalizeReceipt({ ...receipt, hasEvidence: true }, { allowMissingDate: true });
+      const normalizedReceipt = normalizeReceipt({ ...receipt, hasEvidence: true }, { allowMissingDate: true });
+      return normalizedReceipt && validation.dateNeedsReview ? { ...normalizedReceipt, taxUse: "Review" as const, businessUse: 0 } : normalizedReceipt;
     });
     if (normalized.some((item) => !item)) {
       setToast(language === "zh" ? "部分单据资料无效，请检查后再保存。" : "Some receipt details are invalid. Review the highlighted receipt before saving.");
       return;
     }
     const dateReviewCount = validations.filter((validation) => validation.dateNeedsReview).length;
+    const entertainmentReviewCount = pdfDrafts.filter(({ receipt }) => isSoleProprietorEntertainment(receipt.entity, receipt.category) && !insuranceEntertainmentTreatment(receipt).ready).length;
     setProcessing(true);
     try {
       await saveReceiptEvidence(pdfDrafts.map((item) => ({ id: item.receipt.id, pdf: item.region.pdf })));
@@ -754,8 +790,8 @@ export default function Home() {
       setUploadOpen(false);
       setSelectedCategory(null);
       setTab("receipts");
-      setToast(dateReviewCount
-        ? language === "zh" ? `${normalized.length} 张 PDF 已保存；${dateReviewCount} 张日期需确认，已标记为待检查。` : `${normalized.length} PDFs saved. ${dateReviewCount} dates need confirmation and were marked Review.`
+      setToast(dateReviewCount || entertainmentReviewCount
+        ? language === "zh" ? `${normalized.length} 张 PDF 已保存；${dateReviewCount ? `${dateReviewCount} 张日期` : ""}${dateReviewCount && entertainmentReviewCount ? "及" : ""}${entertainmentReviewCount ? `${entertainmentReviewCount} 张保险业务餐饮用途` : ""}需确认，未确认前不会自动扣税。` : `${normalized.length} PDFs saved. ${dateReviewCount ? `${dateReviewCount} date${dateReviewCount === 1 ? "" : "s"}` : ""}${dateReviewCount && entertainmentReviewCount ? " and " : ""}${entertainmentReviewCount ? `${entertainmentReviewCount} insurance meal purpose${entertainmentReviewCount === 1 ? "" : "s"}` : ""} need confirmation; no deduction is applied until reviewed.`
         : language === "zh" ? `${normalized.length} 张 PDF 已保存。点击金额即可查看对应单据。` : `${normalized.length} receipt PDF${normalized.length === 1 ? "" : "s"} saved. Click an amount to open its exact slip.`);
     } catch {
       setToast("Could not save the PDF evidence. No receipt records were added.");
@@ -797,8 +833,8 @@ export default function Home() {
   }
 
   function exportCsv() {
-    const header = "Date,Merchant,Category,Tax use,Business use %,Gross amount (MYR),Claimable amount (MYR),Payment account,Business purpose,MyInvois UUID";
-    const rows = entityReceipts.map((r) => [csvCell(r.date), csvCell(r.merchant), csvCell(r.category), csvCell(r.taxUse), r.businessUse, r.amount.toFixed(2), (r.taxUse === "Business" ? r.amount * r.businessUse / 100 : r.taxUse === "Relief" ? r.amount : 0).toFixed(2), csvCell(r.paymentAccountCode || ""), csvCell(r.businessPurpose || ""), csvCell(r.myInvoisUuid || "")].join(","));
+    const header = "Date,Merchant,Category,Tax use,Business use %,Gross amount (MYR),Claimable amount (MYR),Payment account,Business purpose,Entertainment purpose,Client name,Policy reference,Participants,MyInvois UUID";
+    const rows = entityReceipts.map((r) => [csvCell(r.date), csvCell(r.merchant), csvCell(r.category), csvCell(r.taxUse), r.businessUse, r.amount.toFixed(2), (r.taxUse === "Business" ? r.amount * r.businessUse / 100 : r.taxUse === "Relief" ? r.amount : 0).toFixed(2), csvCell(r.paymentAccountCode || ""), csvCell(r.businessPurpose || ""), csvCell(r.entertainmentPurpose || ""), csvCell(r.clientName || ""), csvCell(r.policyReference || ""), csvCell(r.participants || ""), csvCell(r.myInvoisUuid || "")].join(","));
     const blob = new Blob([`\uFEFF${[header, ...rows].join("\n")}`], { type: "text/csv;charset=utf-8" });
     const link = document.createElement("a");
     link.href = URL.createObjectURL(blob);
@@ -1233,14 +1269,39 @@ function useModalEscape(onClose: () => void, disabled = false) {
   }, [disabled, onClose]);
 }
 
+function InsuranceEntertainmentFields({ receipt, onChange, compact = false }: { receipt: Receipt; onChange: (receipt: Receipt) => void; compact?: boolean }) {
+  const treatment = insuranceEntertainmentTreatment(receipt);
+  const purpose = receipt.entertainmentPurpose || "";
+  const claimable = receipt.amount * treatment.businessUse / 100;
+  const update = (changes: Partial<Receipt>) => onChange(applyInsuranceEntertainmentRules(receipt, changes));
+  const clientMeal = purpose === "existing-client" || purpose === "potential-client";
+  return <section className={`insurance-entertainment ${treatment.ready ? "ready" : "review"} ${compact ? "compact" : ""}`}>
+    <div className="insurance-entertainment-head"><div><strong>Insurance client entertainment</strong><small>LHDN treatment depends on who attended and why.</small></div><a href="https://phl.hasil.gov.my/pdf/pdfam/PR_4_2015.pdf" target="_blank" rel="noreferrer">LHDN PR 4/2015 <ArrowUpRight /></a></div>
+    <label>Meal / entertainment purpose<select value={purpose} onChange={(event) => update({ entertainmentPurpose: normalizeInsuranceEntertainmentPurpose(event.target.value) })}>
+      <option value="">Select purpose — keep in Review</option>
+      <option value="existing-client">Existing insurance client — 50%</option>
+      <option value="potential-client">Potential client — Review / 0% automatic</option>
+      <option value="employee-meal">Employee meal or annual dinner — 100%</option>
+      <option value="sales-event">Insurance product launch / public sales event — 100%</option>
+      <option value="private-meal">Private or owner meal — 0%</option>
+    </select></label>
+    {clientMeal && <div className="form-row"><label>Client name<input maxLength={160} value={receipt.clientName || ""} onChange={(event) => update({ clientName: event.target.value })} placeholder="Required for client entertainment" /></label><label>Policy / quotation reference (optional)<input maxLength={160} value={receipt.policyReference || ""} onChange={(event) => update({ policyReference: event.target.value })} placeholder="Policy, quotation or case reference" /></label></div>}
+    {purpose && purpose !== "private-meal" && <div className="form-row"><label>Business purpose<input maxLength={500} value={receipt.businessPurpose || ""} onChange={(event) => update({ businessPurpose: event.target.value })} placeholder={purpose === "existing-client" ? "e.g. policy review or renewal discussion" : purpose === "potential-client" ? "e.g. insurance proposal discussion" : purpose === "employee-meal" ? "e.g. staff annual dinner" : "e.g. public insurance product launch"} /></label><label>Participants / event details (optional)<input maxLength={500} value={receipt.participants || ""} onChange={(event) => update({ participants: event.target.value })} placeholder="Names or event details" /></label></div>}
+    <div className="entertainment-result"><span>{treatment.label}</span><strong>{treatment.businessUse}% · claimable {currency(claimable)}</strong></div>
+    {purpose === "potential-client" && <small className="entertainment-warning">Ordinary meals with a potential customer are not deducted automatically. Keep this in Review for tax-agent confirmation.</small>}
+  </section>;
+}
+
 function PdfReviewModal({ drafts, processing, language, onChange, onRemove, onSplit, onSave, onClose }: { drafts: PdfDraft[]; processing: boolean; language: "en" | "zh"; onChange: (index: number, receipt: Receipt) => void; onRemove: (index: number) => void; onSplit: (index: number, direction: "horizontal" | "vertical", percent: number) => void; onSave: () => void; onClose: () => void }) {
   const [splitPercent, setSplitPercent] = useState(50);
   useModalEscape(onClose, processing);
   const categories = Object.keys(categoryMeta) as Category[];
   const categorised = drafts.filter(({ receipt }) => receipt.category !== "Others").length;
   const validations = drafts.map(({ receipt }) => validateReceiptDraft(receipt));
-  const needsDetails = validations.filter((validation) => validation.blocking || validation.dateNeedsReview).length;
+  const entertainmentReviews = drafts.map(({ receipt }) => isSoleProprietorEntertainment(receipt.entity, receipt.category) && !insuranceEntertainmentTreatment(receipt).ready);
+  const needsDetails = validations.filter((validation, index) => validation.blocking || validation.dateNeedsReview || entertainmentReviews[index]).length;
   const dateReviewCount = validations.filter((validation) => validation.dateNeedsReview).length;
+  const entertainmentReviewCount = entertainmentReviews.filter(Boolean).length;
   return <div className="modal-backdrop" role="dialog" aria-modal="true" aria-labelledby="pdf-review-title" onMouseDown={(event) => { if (!processing && event.target === event.currentTarget) onClose(); }}><div className="modal pdf-review-modal">
     <div className="modal-head"><div><span className="pill"><FileText /> PDF receipt split</span><h2 id="pdf-review-title">{drafts.length} separate receipt{drafts.length === 1 ? "" : "s"} detected</h2><p>AMS has cut and classified the file. Review the highlighted details, then save each slip as its own PDF.</p></div><button className="icon-btn modal-close" onClick={onClose} disabled={processing} aria-label="Close"><X /></button></div>
     <div className="pdf-review-summary"><article><ScanLine /><span>Detected<strong>{drafts.length} slips</strong></span></article><article><Sparkles /><span>Auto-classified<strong>{categorised} of {drafts.length}</strong></span></article><article className={needsDetails ? "warning" : "ready"}>{needsDetails ? <AlertCircle /> : <Check />}<span>Need review<strong>{needsDetails}</strong></span></article></div>
@@ -1248,7 +1309,7 @@ function PdfReviewModal({ drafts, processing, language, onChange, onRemove, onSp
     <div className="pdf-split-control"><label>Split position <input type="range" min="20" max="80" value={splitPercent} onChange={(event) => setSplitPercent(Number(event.target.value))} /> {splitPercent}%</label><small>Use horizontal for receipts stacked top-to-bottom, vertical for side-by-side receipts.</small></div>
     <div className="pdf-draft-list">{drafts.map(({ receipt, region }, index) => {
       const validation = validations[index];
-      return <section id={`pdf-receipt-${index + 1}`} className={`pdf-draft-card ${validation.blocking ? "invalid" : validation.dateNeedsReview ? "needs-review" : ""}`} key={receipt.id}>
+      return <section id={`pdf-receipt-${index + 1}`} className={`pdf-draft-card ${validation.blocking ? "invalid" : validation.dateNeedsReview || entertainmentReviews[index] ? "needs-review" : ""}`} key={receipt.id}>
       <div className="pdf-preview">{/* The preview is a browser-local data URL, not a remotely optimizable image. */}
         {/* eslint-disable-next-line @next/next/no-img-element */}
         <img src={region.preview} alt={`PDF page ${region.page}, receipt ${index + 1}`} /><span>Page {region.page} · slip {index + 1}</span></div>
@@ -1256,14 +1317,13 @@ function PdfReviewModal({ drafts, processing, language, onChange, onRemove, onSp
         <div className="form-row"><label>Merchant<input aria-invalid={!validation.merchantValid} value={receipt.merchant} maxLength={160} onChange={(event) => onChange(index, { ...receipt, merchant: event.target.value })} /></label><label>Date<input type="date" value={isoDate(receipt.date)} onChange={(event) => onChange(index, { ...receipt, date: displayDate(event.target.value) })} /></label></div>
         {!validation.dateValid && <small className="pdf-ocr-warning">Date was not detected. You can save now; this receipt will stay in Review until you add the printed date.</small>}
         {validation.dateLooksUnusual && <small className="pdf-ocr-warning">This year looks unusually old. Verify the printed year; AMS will keep this receipt in Review.</small>}
-        <div className="form-row"><label>Gross amount (RM)<input aria-invalid={!validation.amountValid} type="number" min="0.01" step="0.01" value={receipt.amount || ""} onChange={(event) => onChange(index, { ...receipt, amount: Number(event.target.value) })} /></label><label>Category<select value={receipt.category} onChange={(event) => onChange(index, { ...receipt, category: event.target.value as Category })}>{categories.map((category) => <option key={category} value={category}>{category === "Toll Fee" ? "Toll & Parking" : category}</option>)}</select></label></div>
+        <div className="form-row"><label>Gross amount (RM)<input aria-invalid={!validation.amountValid} type="number" min="0.01" step="0.01" value={receipt.amount || ""} onChange={(event) => onChange(index, { ...receipt, amount: Number(event.target.value) })} /></label><label>Category<select value={receipt.category} onChange={(event) => onChange(index, applyInsuranceEntertainmentRules(receipt, { category: event.target.value as Category }))}>{categories.map((category) => <option key={category} value={category}>{category === "Toll Fee" ? "Toll & Parking" : category}</option>)}</select></label></div>
         {validation.blocking && <small className="pdf-blocking-warning">Add a valid merchant and amount before saving this receipt.</small>}
-        <div className="form-row"><label>Tax treatment<select value={receipt.taxUse} onChange={(event) => onChange(index, { ...receipt, taxUse: event.target.value as Receipt["taxUse"] })}>{receipt.entity === "personal" ? <><option value="Personal">Personal</option><option value="Relief">Potential relief</option><option value="Review">Review</option></> : <><option value="Review">Review</option><option value="Business">Business</option><option value="Personal">Personal / non-deductible</option></>}</select></label>{receipt.entity !== "personal" && <label>Business use %<input type="number" min="0" max="100" value={receipt.businessUse} onChange={(event) => onChange(index, { ...receipt, businessUse: Number(event.target.value) })} /></label>}</div>
-        {receipt.entity !== "personal" && <label>Business purpose<input value={receipt.businessPurpose || ""} maxLength={500} onChange={(event) => onChange(index, { ...receipt, businessPurpose: event.target.value })} placeholder="Required before posting to accounts" /></label>}
+        {isSoleProprietorEntertainment(receipt.entity, receipt.category) ? <InsuranceEntertainmentFields receipt={receipt} compact onChange={(next) => onChange(index, next)} /> : <><div className="form-row"><label>Tax treatment<select value={receipt.taxUse} onChange={(event) => onChange(index, { ...receipt, taxUse: event.target.value as Receipt["taxUse"] })}>{receipt.entity === "personal" ? <><option value="Personal">Personal</option><option value="Relief">Potential relief</option><option value="Review">Review</option></> : <><option value="Review">Review</option><option value="Business">Business</option><option value="Personal">Personal / non-deductible</option></>}</select></label>{receipt.entity !== "personal" && <label>Business use %<input type="number" min="0" max="100" value={receipt.businessUse} onChange={(event) => onChange(index, { ...receipt, businessUse: Number(event.target.value) })} /></label>}</div>{receipt.entity !== "personal" && <label>Business purpose<input value={receipt.businessPurpose || ""} maxLength={500} onChange={(event) => onChange(index, { ...receipt, businessPurpose: event.target.value })} placeholder="Required before posting to accounts" /></label>}</>}
         <div className="pdf-card-actions"><button type="button" disabled={processing} onClick={() => onSplit(index, "horizontal", splitPercent)}>Split top / bottom</button><button type="button" disabled={processing} onClick={() => onSplit(index, "vertical", splitPercent)}>Split left / right</button></div>
       </div>
     </section>})}</div>
-    <div className="modal-actions"><span className={`save-explainer ${dateReviewCount ? "warning" : ""}`}><FileText /> {dateReviewCount ? language === "zh" ? `${dateReviewCount} 张日期需确认；现在可以保存，系统会标记为待检查。` : `${dateReviewCount} dates need confirmation. You can save now; they will be marked Review.` : "Amounts become clickable after saving"}</span><button className="secondary" disabled={processing} onClick={onClose}>Cancel</button><button className="primary" disabled={processing || !drafts.length} onClick={onSave}>{processing ? <LoaderCircle className="spinner-inline" /> : <Save />} Save {drafts.length} separate PDFs</button></div>
+    <div className="modal-actions"><span className={`save-explainer ${dateReviewCount || entertainmentReviewCount ? "warning" : ""}`}><FileText /> {dateReviewCount ? language === "zh" ? `${dateReviewCount} 张日期需确认；现在可以保存，系统会标记为待检查。` : `${dateReviewCount} dates need confirmation. You can save now; they will be marked Review.` : entertainmentReviewCount ? language === "zh" ? `${entertainmentReviewCount} 张保险业务餐饮需选择用途，未确认前不会自动扣税。` : `${entertainmentReviewCount} insurance meal${entertainmentReviewCount === 1 ? "" : "s"} need a purpose; no deduction is applied yet.` : "Amounts become clickable after saving"}</span><button className="secondary" disabled={processing} onClick={onClose}>Cancel</button><button className="primary" disabled={processing || !drafts.length} onClick={onSave}>{processing ? <LoaderCircle className="spinner-inline" /> : <Save />} Save {drafts.length} separate PDFs</button></div>
   </div></div>;
 }
 
@@ -1272,6 +1332,7 @@ function UploadModal({ entity, draft, setDraft, processing, progress, fileRef, o
   const personalCategories: Category[] = ["Medical", "Lifestyle", "Education", "Insurance", "EPF & SOCSO", "Zakat", "Food & Beverage", "Stationery", "Petrol", "Toll Fee", "Entertainment", "Mobile", "Others"];
   const businessCategories: Category[] = ["Food & Beverage", "Stationery", "Petrol", "Toll Fee", "Mobile", "Entertainment", "Office Rent", "Software & Subscriptions", "Professional Fees", "Advertising & Marketing", "Utilities", "Others"];
   const draftAccount = (draft?.entity || entity) === "personal" ? "Sim Lip Geap · Personal" : (draft?.entity || entity) === "company" ? "Solver Academy · Sdn. Bhd." : "Sim Lip Geap · Sole proprietor";
+  const insuranceEntertainment = Boolean(draft && isSoleProprietorEntertainment(draft.entity, draft.category));
   return <div className="modal-backdrop" role="dialog" aria-modal="true" aria-labelledby="upload-title" onMouseDown={(event) => { if (event.target === event.currentTarget) onClose(); }}><div className="modal">
     <div className="modal-head"><div><span className="pill"><Sparkles /> {draftAccount}</span><h2 id="upload-title">{draft ? "Review receipt" : "Upload receipts"}</h2><p>{draft ? "Confirm the extracted details before saving." : "Upload one file — AMS will separate and organise the receipts inside it."}</p></div><button className="icon-btn modal-close" onClick={onClose} aria-label="Close"><X /></button></div>
     {!draft && <div className="upload-flow"><span className="active"><b>1</b> Upload</span><ChevronRight /><span><b>2</b> Auto split & classify</span><ChevronRight /><span><b>3</b> Save & click amount</span></div>}
@@ -1281,12 +1342,11 @@ function UploadModal({ entity, draft, setDraft, processing, progress, fileRef, o
     </button> : <form onSubmit={onSave} className="receipt-form">
       <div className="detected"><span><Check /></span><div><strong>{draft.entity === "personal" ? "Personal account detected" : draft.entity === "company" ? "Sdn. Bhd. account detected" : "Sole proprietor account detected"}</strong><small>{draft.confidence}% category confidence · Please confirm</small></div></div>
       <div className="form-row"><label>Merchant<input maxLength={160} value={draft.merchant} onChange={(e) => setDraft({ ...draft, merchant: e.target.value })} required /></label><label>Receipt date<input type="date" value={isoDate(draft.date)} onChange={(e) => setDraft({ ...draft, date: displayDate(e.target.value) })} required /></label></div>
-      <div className="form-row"><label>Amount (RM)<input type="number" step="0.01" min="0.01" max="999999999.99" value={draft.amount} onChange={(e) => setDraft({ ...draft, amount: Number(e.target.value) })} required /></label><label>Category<select value={draft.category} onChange={(e) => setDraft({ ...draft, category: e.target.value as Category })}>{(draft.entity === "personal" ? personalCategories : businessCategories).map((category) => <option key={category} value={category}>{category === "Toll Fee" ? "Toll & Parking" : category}</option>)}</select></label></div>
+      <div className="form-row"><label>Amount (RM)<input type="number" step="0.01" min="0.01" max="999999999.99" value={draft.amount} onChange={(e) => setDraft({ ...draft, amount: Number(e.target.value) })} required /></label><label>Category<select value={draft.category} onChange={(e) => setDraft(applyInsuranceEntertainmentRules(draft, { category: e.target.value as Category }))}>{(draft.entity === "personal" ? personalCategories : businessCategories).map((category) => <option key={category} value={category}>{category === "Toll Fee" ? "Toll & Parking" : category}</option>)}</select></label></div>
       {draft.entity !== "personal" && <label>Paid from / liability<select value={draft.paymentAccountCode || "1010"} onChange={(e) => setDraft({ ...draft, paymentAccountCode: e.target.value })}>
         <option value="1010">Business bank account</option><option value="1000">Cash on hand</option><option value="2000">Trade payables (not paid yet)</option><option value={draft.entity === "company" ? "2600" : "3000"}>{draft.entity === "company" ? "Paid by director" : "Paid personally by owner"}</option>
       </select></label>}
-      <label>Tax treatment<div className={`segmented ${draft.entity === "personal" ? "" : "four"}`}>{(draft.entity === "personal" ? ["Relief", "Personal", "Review"] as const : ["Business", "Personal", "Review"] as const).map((value) => <button type="button" className={draft.taxUse === value ? "active" : ""} onClick={() => setDraft({ ...draft, taxUse: value, businessUse: value === "Business" ? Math.max(draft.businessUse, 1) : draft.businessUse })} key={value}>{value}</button>)}</div></label>
-      {draft.taxUse === "Business" && <><div className="form-row"><label>Business use<input type="range" min="1" max="100" value={Math.max(1, draft.businessUse)} onChange={(e) => setDraft({ ...draft, businessUse: Number(e.target.value) })} /><span className="range-value">{Math.max(1, draft.businessUse)}% · claimable {currency(draft.amount * Math.max(1, draft.businessUse) / 100)}</span></label><label>MyInvois UUID (optional)<input maxLength={160} value={draft.myInvoisUuid || ""} onChange={(e) => setDraft({ ...draft, myInvoisUuid: e.target.value })} placeholder="MyInvois document UUID" /></label></div><label>Business purpose<input maxLength={500} value={draft.businessPurpose || ""} onChange={(e) => setDraft({ ...draft, businessPurpose: e.target.value })} placeholder="Required before posting, e.g. client visit" /></label></>}
+      {insuranceEntertainment ? <><InsuranceEntertainmentFields receipt={draft} onChange={setDraft} /><label>MyInvois UUID (optional)<input maxLength={160} value={draft.myInvoisUuid || ""} onChange={(e) => setDraft({ ...draft, myInvoisUuid: e.target.value })} placeholder="MyInvois document UUID" /></label></> : <><label>Tax treatment<div className={`segmented ${draft.entity === "personal" ? "" : "four"}`}>{(draft.entity === "personal" ? ["Relief", "Personal", "Review"] as const : ["Business", "Personal", "Review"] as const).map((value) => <button type="button" className={draft.taxUse === value ? "active" : ""} onClick={() => setDraft({ ...draft, taxUse: value, businessUse: value === "Business" ? Math.max(draft.businessUse, 1) : draft.businessUse })} key={value}>{value}</button>)}</div></label>{draft.taxUse === "Business" && <><div className="form-row"><label>Business use<input type="range" min="1" max="100" value={Math.max(1, draft.businessUse)} onChange={(e) => setDraft({ ...draft, businessUse: Number(e.target.value) })} /><span className="range-value">{Math.max(1, draft.businessUse)}% · claimable {currency(draft.amount * Math.max(1, draft.businessUse) / 100)}</span></label><label>MyInvois UUID (optional)<input maxLength={160} value={draft.myInvoisUuid || ""} onChange={(e) => setDraft({ ...draft, myInvoisUuid: e.target.value })} placeholder="MyInvois document UUID" /></label></div><label>Business purpose<input maxLength={500} value={draft.businessPurpose || ""} onChange={(e) => setDraft({ ...draft, businessPurpose: e.target.value })} placeholder="Required before posting, e.g. client visit" /></label></>}</>}
       <div className="modal-actions"><button type="button" className="secondary" onClick={onClose}>Cancel</button><button className="primary" type="submit"><Check /> Save to {draftAccount}</button></div>
     </form>}
   </div></div>;
