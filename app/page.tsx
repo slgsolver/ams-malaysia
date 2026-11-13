@@ -56,7 +56,7 @@ import { balanceSheet, cashFlowStatement, chartOfAccounts, profitAndLoss, saniti
 import type { AccountingReceipt, JournalEntry } from "./lib/accounting";
 import { translateToChinese } from "./i18n";
 import { classifyReceiptText, readPdfRegion, readPdfRegions } from "./lib/pdf-receipts";
-import { extractReceiptAmount, extractReceiptDate, extractReceiptMerchant, latestReceiptDate } from "./lib/receipt-extraction";
+import { extractReceiptAmount, extractReceiptDate, extractReceiptMerchant, latestReceiptDate, validateReceiptDraft } from "./lib/receipt-extraction";
 import type { Crop, PdfRegion, ReceiptCategory } from "./lib/pdf-receipts";
 import { getReceiptEvidence, saveReceiptEvidence } from "./lib/receipt-evidence";
 import { loadStampRecords, STAMP_RULE_VERSION } from "./lib/stamp-duty";
@@ -110,7 +110,7 @@ function shortText(value: unknown, max: number) {
   return typeof value === "string" ? value.trim().slice(0, max) : "";
 }
 
-function normalizeReceipt(value: unknown): Receipt | null {
+function normalizeReceipt(value: unknown, { allowMissingDate = false }: { allowMissingDate?: boolean } = {}): Receipt | null {
   if (!value || typeof value !== "object") return null;
   const item = value as Partial<Receipt>;
   const id = shortText(item.id, 160);
@@ -119,7 +119,7 @@ function normalizeReceipt(value: unknown): Receipt | null {
   const amount = Number(item.amount);
   const businessUse = Number(item.businessUse);
   const confidence = Number(item.confidence);
-  if (!id || !merchant || !date || !Number.isFinite(amount) || amount <= 0 || amount > 999_999_999.99) return null;
+  if (!id || !merchant || (!allowMissingDate && !date) || !Number.isFinite(amount) || amount <= 0 || amount > 999_999_999.99) return null;
   if (!item.entity || !entityValues.has(item.entity) || !item.category || !categoryValues.has(item.category) || !item.taxUse || !taxUseValues.has(item.taxUse)) return null;
   if (item.entity === "personal" && item.taxUse === "Business") return null;
   if (item.entity !== "personal" && item.taxUse === "Relief") return null;
@@ -485,7 +485,7 @@ export default function Home() {
           savedReceipts = savedReceipts.map((receipt) => receipt?.entity === "business" ? { ...receipt, entity: "company" } : receipt);
           window.localStorage.setItem("ams-company-entity-v1-migrated", "true");
         }
-        const hydrated = Array.isArray(savedReceipts) ? removeLegacyDemoReceipts(savedReceipts.map(normalizeReceipt).filter((receipt): receipt is Receipt => Boolean(receipt))) : [];
+        const hydrated = Array.isArray(savedReceipts) ? removeLegacyDemoReceipts(savedReceipts.map((receipt) => normalizeReceipt(receipt, { allowMissingDate: true })).filter((receipt): receipt is Receipt => Boolean(receipt))) : [];
         // eslint-disable-next-line react-hooks/set-state-in-effect -- hydrate saved receipt records after mount
         if (Array.isArray(savedReceipts)) setReceipts(hydrated);
       }
@@ -727,11 +727,24 @@ export default function Home() {
 
   async function savePdfDrafts() {
     if (!pdfDrafts.length) return;
-    const normalized = pdfDrafts.map((item) => normalizeReceipt({ ...item.receipt, hasEvidence: true }));
-    if (normalized.some((item) => !item)) {
-      setToast("Check every receipt: merchant, date and amount must be valid before saving.");
+    const validations = pdfDrafts.map((item) => validateReceiptDraft(item.receipt));
+    const firstBlockingIndex = validations.findIndex((validation) => validation.blocking);
+    if (firstBlockingIndex >= 0) {
+      const fields = validations[firstBlockingIndex].blockingFields.join(" and ");
+      setToast(language === "zh" ? `第 ${firstBlockingIndex + 1} 张单据缺少有效的商家或金额。` : `Receipt ${firstBlockingIndex + 1} needs a valid ${fields} before saving.`);
+      window.setTimeout(() => document.getElementById(`pdf-receipt-${firstBlockingIndex + 1}`)?.scrollIntoView({ behavior: "smooth", block: "center" }), 50);
       return;
     }
+    const normalized = pdfDrafts.map((item, index) => {
+      const validation = validations[index];
+      const receipt = validation.dateNeedsReview ? { ...item.receipt, date: validation.dateValid ? item.receipt.date : "", taxUse: "Review" as const } : item.receipt;
+      return normalizeReceipt({ ...receipt, hasEvidence: true }, { allowMissingDate: true });
+    });
+    if (normalized.some((item) => !item)) {
+      setToast(language === "zh" ? "部分单据资料无效，请检查后再保存。" : "Some receipt details are invalid. Review the highlighted receipt before saving.");
+      return;
+    }
+    const dateReviewCount = validations.filter((validation) => validation.dateNeedsReview).length;
     setProcessing(true);
     try {
       await saveReceiptEvidence(pdfDrafts.map((item) => ({ id: item.receipt.id, pdf: item.region.pdf })));
@@ -741,7 +754,9 @@ export default function Home() {
       setUploadOpen(false);
       setSelectedCategory(null);
       setTab("receipts");
-      setToast(`${normalized.length} receipt PDF${normalized.length === 1 ? "" : "s"} saved. Click an amount to open its exact slip.`);
+      setToast(dateReviewCount
+        ? language === "zh" ? `${normalized.length} 张 PDF 已保存；${dateReviewCount} 张日期需确认，已标记为待检查。` : `${normalized.length} PDFs saved. ${dateReviewCount} dates need confirmation and were marked Review.`
+        : language === "zh" ? `${normalized.length} 张 PDF 已保存。点击金额即可查看对应单据。` : `${normalized.length} receipt PDF${normalized.length === 1 ? "" : "s"} saved. Click an amount to open its exact slip.`);
     } catch {
       setToast("Could not save the PDF evidence. No receipt records were added.");
     } finally {
@@ -1145,7 +1160,7 @@ export default function Home() {
         )}
       </section>
 
-      {uploadOpen && pdfDrafts.length > 0 ? <PdfReviewModal drafts={pdfDrafts} processing={processing} onChange={(index, receipt) => setPdfDrafts((current) => current.map((item, at) => at === index ? { ...item, receipt } : item))} onRemove={(index) => setPdfDrafts((current) => current.filter((_, at) => at !== index))} onSplit={splitPdfDraft} onSave={savePdfDrafts} onClose={closeUpload} /> : uploadOpen && <UploadModal entity={entity} draft={draft} setDraft={setDraft} processing={processing} progress={progress} fileRef={fileRef} onFile={handleFile} onClose={closeUpload} onSave={saveReceipt} />}
+      {uploadOpen && pdfDrafts.length > 0 ? <PdfReviewModal drafts={pdfDrafts} processing={processing} language={language} onChange={(index, receipt) => setPdfDrafts((current) => current.map((item, at) => at === index ? { ...item, receipt } : item))} onRemove={(index) => setPdfDrafts((current) => current.filter((_, at) => at !== index))} onSplit={splitPdfDraft} onSave={savePdfDrafts} onClose={closeUpload} /> : uploadOpen && <UploadModal entity={entity} draft={draft} setDraft={setDraft} processing={processing} progress={progress} fileRef={fileRef} onFile={handleFile} onClose={closeUpload} onSave={saveReceipt} />}
       {menuOpen && <button className="menu-backdrop" aria-label="Close menu" onClick={() => setMenuOpen(false)} />}
       {toast && <div className="toast"><Check /> {toast}</div>}
     </main>
@@ -1202,7 +1217,7 @@ function ReceiptTable({ entity, receipts, query, setQuery, onViewAll, onEdit, on
     <div className="table-wrap"><table className="receipt-table"><thead><tr><th>Merchant</th><th>Date</th><th>Category</th><th>Tax use</th><th>{entity === "personal" ? "Account" : "Business use"}</th><th>{entity === "personal" ? "Amount" : "Claimable"}</th><th></th></tr></thead><tbody>{receipts.map((receipt) => {
       const Icon = categoryMeta[receipt.category].icon;
       const shownAmount = entity === "personal" ? receipt.amount : receipt.taxUse === "Business" ? receipt.amount * receipt.businessUse / 100 : 0;
-      return <tr key={receipt.id}><td data-label="Merchant"><div className="merchant"><span className={`cat-icon ${categoryMeta[receipt.category].tone}`}><Icon /></span><div><b>{receipt.merchant}</b><small>{receipt.myInvoisUuid ? `MyInvois ${receipt.myInvoisUuid}` : receipt.hasEvidence ? "PDF evidence linked" : `${receipt.confidence}% category match`}</small></div></div></td><td data-label="Date">{receipt.date}</td><td data-label="Category"><span className="category-label">{receipt.category === "Toll Fee" ? "Toll & Parking" : receipt.category}</span></td><td data-label="Tax use"><span className={`tax-use ${receipt.taxUse.toLowerCase()}`}>{receipt.taxUse === "Review" ? <AlertCircle /> : receipt.taxUse === "Relief" ? <FileCheck2 /> : null}{receipt.taxUse}</span></td><td data-label={entity === "personal" ? "Account" : "Business use"}>{entity === "personal" ? "Personal" : receipt.taxUse === "Business" ? `${receipt.businessUse}%` : "—"}</td><td data-label={entity === "personal" ? "Amount" : "Claimable"} className="receipt-money-cell">{receipt.hasEvidence ? <button className="receipt-amount-link" aria-label={`Open ${currency(receipt.amount)} receipt PDF for ${receipt.merchant}`} title="Open this receipt PDF" onClick={() => onOpenEvidence(receipt)}><b>{currency(receipt.amount)}</b><span>View PDF</span><FileText /></button> : <strong>{currency(shownAmount)}</strong>}{entity !== "personal" && <small className="gross-amount">{receipt.hasEvidence ? `claimable ${currency(shownAmount)}` : `gross ${currency(receipt.amount)}`}</small>}</td><td className="receipt-edit-cell"><button className="more" aria-label={`Edit ${receipt.merchant}`} onClick={() => onEdit(receipt)}><Pencil /></button></td></tr>;
+      return <tr key={receipt.id}><td data-label="Merchant"><div className="merchant"><span className={`cat-icon ${categoryMeta[receipt.category].tone}`}><Icon /></span><div><b>{receipt.merchant}</b><small>{receipt.myInvoisUuid ? `MyInvois ${receipt.myInvoisUuid}` : receipt.hasEvidence ? "PDF evidence linked" : `${receipt.confidence}% category match`}</small></div></div></td><td data-label="Date">{receipt.date || <button className="missing-date" onClick={() => onEdit(receipt)}><AlertCircle /> Date missing · edit</button>}</td><td data-label="Category"><span className="category-label">{receipt.category === "Toll Fee" ? "Toll & Parking" : receipt.category}</span></td><td data-label="Tax use"><span className={`tax-use ${receipt.taxUse.toLowerCase()}`}>{receipt.taxUse === "Review" ? <AlertCircle /> : receipt.taxUse === "Relief" ? <FileCheck2 /> : null}{receipt.taxUse}</span></td><td data-label={entity === "personal" ? "Account" : "Business use"}>{entity === "personal" ? "Personal" : receipt.taxUse === "Business" ? `${receipt.businessUse}%` : "—"}</td><td data-label={entity === "personal" ? "Amount" : "Claimable"} className="receipt-money-cell">{receipt.hasEvidence ? <button className="receipt-amount-link" aria-label={`Open ${currency(receipt.amount)} receipt PDF for ${receipt.merchant}`} title="Open this receipt PDF" onClick={() => onOpenEvidence(receipt)}><b>{currency(receipt.amount)}</b><span>View PDF</span><FileText /></button> : <strong>{currency(shownAmount)}</strong>}{entity !== "personal" && <small className="gross-amount">{receipt.hasEvidence ? `claimable ${currency(shownAmount)}` : `gross ${currency(receipt.amount)}`}</small>}</td><td className="receipt-edit-cell"><button className="more" aria-label={`Edit ${receipt.merchant}`} onClick={() => onEdit(receipt)}><Pencil /></button></td></tr>;
     })}{!receipts.length && <tr className="receipt-empty-row"><td colSpan={7}><ReceiptText /><strong>No receipts found</strong><small>Upload a PDF or clear the search to see receipt records.</small></td></tr>}</tbody></table></div>
   </section>;
 }
@@ -1218,31 +1233,37 @@ function useModalEscape(onClose: () => void, disabled = false) {
   }, [disabled, onClose]);
 }
 
-function PdfReviewModal({ drafts, processing, onChange, onRemove, onSplit, onSave, onClose }: { drafts: PdfDraft[]; processing: boolean; onChange: (index: number, receipt: Receipt) => void; onRemove: (index: number) => void; onSplit: (index: number, direction: "horizontal" | "vertical", percent: number) => void; onSave: () => void; onClose: () => void }) {
+function PdfReviewModal({ drafts, processing, language, onChange, onRemove, onSplit, onSave, onClose }: { drafts: PdfDraft[]; processing: boolean; language: "en" | "zh"; onChange: (index: number, receipt: Receipt) => void; onRemove: (index: number) => void; onSplit: (index: number, direction: "horizontal" | "vertical", percent: number) => void; onSave: () => void; onClose: () => void }) {
   const [splitPercent, setSplitPercent] = useState(50);
   useModalEscape(onClose, processing);
   const categories = Object.keys(categoryMeta) as Category[];
   const categorised = drafts.filter(({ receipt }) => receipt.category !== "Others").length;
-  const needsDetails = drafts.filter(({ receipt }) => !receipt.amount || !isoDate(receipt.date)).length;
+  const validations = drafts.map(({ receipt }) => validateReceiptDraft(receipt));
+  const needsDetails = validations.filter((validation) => validation.blocking || validation.dateNeedsReview).length;
+  const dateReviewCount = validations.filter((validation) => validation.dateNeedsReview).length;
   return <div className="modal-backdrop" role="dialog" aria-modal="true" aria-labelledby="pdf-review-title" onMouseDown={(event) => { if (!processing && event.target === event.currentTarget) onClose(); }}><div className="modal pdf-review-modal">
     <div className="modal-head"><div><span className="pill"><FileText /> PDF receipt split</span><h2 id="pdf-review-title">{drafts.length} separate receipt{drafts.length === 1 ? "" : "s"} detected</h2><p>AMS has cut and classified the file. Review the highlighted details, then save each slip as its own PDF.</p></div><button className="icon-btn modal-close" onClick={onClose} disabled={processing} aria-label="Close"><X /></button></div>
-    <div className="pdf-review-summary"><article><ScanLine /><span>Detected<strong>{drafts.length} slips</strong></span></article><article><Sparkles /><span>Auto-classified<strong>{categorised} of {drafts.length}</strong></span></article><article className={needsDetails ? "warning" : "ready"}>{needsDetails ? <AlertCircle /> : <Check />}<span>Need details<strong>{needsDetails}</strong></span></article></div>
+    <div className="pdf-review-summary"><article><ScanLine /><span>Detected<strong>{drafts.length} slips</strong></span></article><article><Sparkles /><span>Auto-classified<strong>{categorised} of {drafts.length}</strong></span></article><article className={needsDetails ? "warning" : "ready"}>{needsDetails ? <AlertCircle /> : <Check />}<span>Need review<strong>{needsDetails}</strong></span></article></div>
     <div className="pdf-review-note"><AlertCircle /> OCR and auto-splitting may be wrong. Split a combined page below; do not save until each preview contains exactly one receipt. Business tax use starts at Review. PDF evidence is stored in this browser; export a backup from Audit Pack.</div>
     <div className="pdf-split-control"><label>Split position <input type="range" min="20" max="80" value={splitPercent} onChange={(event) => setSplitPercent(Number(event.target.value))} /> {splitPercent}%</label><small>Use horizontal for receipts stacked top-to-bottom, vertical for side-by-side receipts.</small></div>
-    <div className="pdf-draft-list">{drafts.map(({ receipt, region }, index) => <section className="pdf-draft-card" key={receipt.id}>
+    <div className="pdf-draft-list">{drafts.map(({ receipt, region }, index) => {
+      const validation = validations[index];
+      return <section id={`pdf-receipt-${index + 1}`} className={`pdf-draft-card ${validation.blocking ? "invalid" : validation.dateNeedsReview ? "needs-review" : ""}`} key={receipt.id}>
       <div className="pdf-preview">{/* The preview is a browser-local data URL, not a remotely optimizable image. */}
         {/* eslint-disable-next-line @next/next/no-img-element */}
         <img src={region.preview} alt={`PDF page ${region.page}, receipt ${index + 1}`} /><span>Page {region.page} · slip {index + 1}</span></div>
       <div className="pdf-draft-fields"><div className="pdf-card-head"><div><strong>Receipt {index + 1}</strong><span className={`pdf-auto-chip ${receipt.category === "Others" ? "review" : "ready"}`}><Sparkles /> {receipt.category === "Others" ? "Choose category" : `${receipt.confidence}% category match`}</span></div><button type="button" onClick={() => onRemove(index)} disabled={processing}>Remove</button></div>
-        <div className="form-row"><label>Merchant<input value={receipt.merchant} maxLength={160} onChange={(event) => onChange(index, { ...receipt, merchant: event.target.value })} /></label><label>Date<input type="date" value={isoDate(receipt.date)} onChange={(event) => onChange(index, { ...receipt, date: displayDate(event.target.value) })} /></label></div>
-        {!isoDate(receipt.date) && <small className="pdf-ocr-warning">Date was not detected. Enter the date printed on this slip before saving.</small>}
-        <div className="form-row"><label>Gross amount (RM)<input type="number" min="0.01" step="0.01" value={receipt.amount || ""} onChange={(event) => onChange(index, { ...receipt, amount: Number(event.target.value) })} /></label><label>Category<select value={receipt.category} onChange={(event) => onChange(index, { ...receipt, category: event.target.value as Category })}>{categories.map((category) => <option key={category} value={category}>{category === "Toll Fee" ? "Toll & Parking" : category}</option>)}</select></label></div>
+        <div className="form-row"><label>Merchant<input aria-invalid={!validation.merchantValid} value={receipt.merchant} maxLength={160} onChange={(event) => onChange(index, { ...receipt, merchant: event.target.value })} /></label><label>Date<input type="date" value={isoDate(receipt.date)} onChange={(event) => onChange(index, { ...receipt, date: displayDate(event.target.value) })} /></label></div>
+        {!validation.dateValid && <small className="pdf-ocr-warning">Date was not detected. You can save now; this receipt will stay in Review until you add the printed date.</small>}
+        {validation.dateLooksUnusual && <small className="pdf-ocr-warning">This year looks unusually old. Verify the printed year; AMS will keep this receipt in Review.</small>}
+        <div className="form-row"><label>Gross amount (RM)<input aria-invalid={!validation.amountValid} type="number" min="0.01" step="0.01" value={receipt.amount || ""} onChange={(event) => onChange(index, { ...receipt, amount: Number(event.target.value) })} /></label><label>Category<select value={receipt.category} onChange={(event) => onChange(index, { ...receipt, category: event.target.value as Category })}>{categories.map((category) => <option key={category} value={category}>{category === "Toll Fee" ? "Toll & Parking" : category}</option>)}</select></label></div>
+        {validation.blocking && <small className="pdf-blocking-warning">Add a valid merchant and amount before saving this receipt.</small>}
         <div className="form-row"><label>Tax treatment<select value={receipt.taxUse} onChange={(event) => onChange(index, { ...receipt, taxUse: event.target.value as Receipt["taxUse"] })}>{receipt.entity === "personal" ? <><option value="Personal">Personal</option><option value="Relief">Potential relief</option><option value="Review">Review</option></> : <><option value="Review">Review</option><option value="Business">Business</option><option value="Personal">Personal / non-deductible</option></>}</select></label>{receipt.entity !== "personal" && <label>Business use %<input type="number" min="0" max="100" value={receipt.businessUse} onChange={(event) => onChange(index, { ...receipt, businessUse: Number(event.target.value) })} /></label>}</div>
         {receipt.entity !== "personal" && <label>Business purpose<input value={receipt.businessPurpose || ""} maxLength={500} onChange={(event) => onChange(index, { ...receipt, businessPurpose: event.target.value })} placeholder="Required before posting to accounts" /></label>}
         <div className="pdf-card-actions"><button type="button" disabled={processing} onClick={() => onSplit(index, "horizontal", splitPercent)}>Split top / bottom</button><button type="button" disabled={processing} onClick={() => onSplit(index, "vertical", splitPercent)}>Split left / right</button></div>
       </div>
-    </section>)}</div>
-    <div className="modal-actions"><span className="save-explainer"><FileText /> Amounts become clickable after saving</span><button className="secondary" disabled={processing} onClick={onClose}>Cancel</button><button className="primary" disabled={processing || !drafts.length} onClick={onSave}>{processing ? <LoaderCircle className="spinner-inline" /> : <Save />} Save {drafts.length} separate PDFs</button></div>
+    </section>})}</div>
+    <div className="modal-actions"><span className={`save-explainer ${dateReviewCount ? "warning" : ""}`}><FileText /> {dateReviewCount ? language === "zh" ? `${dateReviewCount} 张日期需确认；现在可以保存，系统会标记为待检查。` : `${dateReviewCount} dates need confirmation. You can save now; they will be marked Review.` : "Amounts become clickable after saving"}</span><button className="secondary" disabled={processing} onClick={onClose}>Cancel</button><button className="primary" disabled={processing || !drafts.length} onClick={onSave}>{processing ? <LoaderCircle className="spinner-inline" /> : <Save />} Save {drafts.length} separate PDFs</button></div>
   </div></div>;
 }
 

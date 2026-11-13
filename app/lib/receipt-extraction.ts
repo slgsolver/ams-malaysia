@@ -22,6 +22,26 @@ export function extractReceiptDate(text: string, now = new Date()) {
   return candidates.sort((left, right) => left.index - right.index)[0]?.value || "";
 }
 
+export function validateReceiptDraft(value: { merchant?: unknown; date?: unknown; amount?: unknown }, now = new Date()) {
+  const merchantValid = typeof value.merchant === "string" && value.merchant.trim().length > 0;
+  const amount = Number(value.amount);
+  const amountValid = Number.isFinite(amount) && amount > 0 && amount <= 999_999_999.99;
+  const dateText = typeof value.date === "string" ? value.date.trim() : "";
+  const dateValue = dateText ? new Date(dateText) : null;
+  const dateValid = Boolean(dateValue && Number.isFinite(dateValue.getTime()) && dateValue.getTime() <= now.getTime() + 36 * 60 * 60 * 1000);
+  const dateLooksUnusual = Boolean(dateValid && dateValue && dateValue.getFullYear() < now.getFullYear() - 7);
+  const blockingFields = [!merchantValid ? "merchant" : "", !amountValid ? "amount" : ""].filter(Boolean);
+  return {
+    merchantValid,
+    amountValid,
+    dateValid,
+    dateLooksUnusual,
+    dateNeedsReview: !dateValid || dateLooksUnusual,
+    blockingFields,
+    blocking: blockingFields.length > 0,
+  };
+}
+
 function monetaryValues(line: string) {
   return [...line.matchAll(/(?:RM|MYR\s*)?(\d{1,6}(?:[.,]\d{2})?)/gi)]
     .filter((match) => /RM|MYR/i.test(match[0]) || /[.,]\d{2}$/.test(match[1]))
